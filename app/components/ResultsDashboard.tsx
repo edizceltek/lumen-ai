@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ShareCardModal } from "./ShareCardModal";
 import { AuraChat } from "./AuraChat";
+import FaceMeshOverlay from "./FaceMeshOverlay";
 import { buildPlan, type CoachingPlan } from "../lib/plan";
 import { downloadPlanPdf } from "../lib/pdf";
 
@@ -182,7 +183,6 @@ export function ResultsDashboard({
         potential: analysis.metrics.potential,
         portrait: portrait && portrait.length < 300_000 ? portrait : undefined,
       };
-      // Kota taşmasını önlemek için yalnızca en güncel kayıtta portre tutulur
       const older = existing
         .filter((item) => item.id !== entry.id)
         .map(({ portrait: _drop, ...rest }) => rest);
@@ -230,18 +230,6 @@ export function ResultsDashboard({
     ["neckPosture", "Boyun & Duruş", m.neckPosture ?? Math.min(95, m.jawline)],
   ] as const;
 
-  const lm = analysis.landmarks || {};
-  const hairY = lm.hairlineY ?? 22;
-  const browY = lm.browY ?? 38;
-  const noseY = lm.noseBaseY ?? 58;
-  const chinY = lm.chinY ?? 81;
-  const lEyeX = lm.leftEyeX ?? 38;
-  const rEyeX = lm.rightEyeX ?? 62;
-  const eyeY = lm.eyeY ?? 43;
-  const jawLX = lm.jawLeftX ?? 30;
-  const jawRX = lm.jawRightX ?? 70;
-  const jawY = lm.jawY ?? 68;
-
   const highRoi = analysis.highRoi ?? {
     title: analysis.improvementArea || "Cilt Bariyeri & Ödem Kontrolü",
     action: "Sabah SPF + akşam temizlik rutini ve günlük 3L su tüketimiyle ilk 14 günde belirgin netlik kazan.",
@@ -279,7 +267,7 @@ export function ResultsDashboard({
         </div>
       </div>
 
-      {/* Mobil Uygulama Sekme Çubuğu (3 Kompakt Görünüm) */}
+      {/* Mobil Uygulama Sekme Çubuğu */}
       <div
         role="tablist"
         aria-label="Analiz bölümleri"
@@ -326,10 +314,9 @@ export function ResultsDashboard({
         </button>
       </div>
 
-      {/* SEKME 1: ÖZET & İLK ADIM (Neredesin, Neyi Geliştirebilirsin, İlk Ne Yapmalısın) */}
+      {/* SEKME 1: ÖZET & İLK ADIM */}
       {activeTab === "overview" && (
         <div className="mt-4 space-y-4 fade-up">
-          {/* 1. Şu Anda Neredesin: Genel & Potansiyel Skor */}
           <div className="glass rounded-[26px] p-4 sm:p-5">
             <div className="flex divide-x divide-white/[.08]">
               <Gauge label="MEVCUT SKOR" value={analysis.metrics.overall} />
@@ -344,7 +331,6 @@ export function ResultsDashboard({
             </div>
           </div>
 
-          {/* 2. İlk Olarak Ne Yapmalısın: High-ROI Kartı */}
           <div className="rounded-[24px] border border-ice/35 bg-gradient-to-br from-ice/[.12] via-white/[.02] to-transparent p-4">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-semibold tracking-[.16em] text-ice">
@@ -365,7 +351,6 @@ export function ResultsDashboard({
             </button>
           </div>
 
-          {/* 3. Hızlı Stil Hamlesi: Berber Reçetesi */}
           <div className="glass rounded-[24px] p-4 sm:p-5">
             <p className="text-[10px] font-semibold tracking-[.16em] text-ice">BERBER REÇETESİ</p>
             <h2 className="mt-0.5 text-sm font-medium text-white">Koltukta Gösterilecek Teknik Tarif</h2>
@@ -385,7 +370,6 @@ export function ResultsDashboard({
             </div>
           </div>
 
-          {/* 4. 30 Günlük Gelişim Kıyaslama */}
           <div className="glass rounded-[24px] p-4 sm:p-5">
             <div className="flex items-center justify-between">
               <div>
@@ -429,7 +413,7 @@ export function ResultsDashboard({
             <div className="glass overflow-hidden rounded-[24px] p-3.5">
               <div className="mb-2.5 flex items-center justify-between px-1">
                 <span className="text-[11px] font-medium tracking-[.12em] text-white/60">
-                  YÜZ ORAN HARİTASI (TAHMİNİ)
+                  YÜZ ORAN HARİTASI
                 </span>
                 <button
                   type="button"
@@ -445,32 +429,7 @@ export function ResultsDashboard({
               </div>
               <div className="relative aspect-[4/3] w-full overflow-hidden rounded-[18px] bg-black/40">
                 <img src={portrait} alt="Yüz oran haritası" className="h-full w-full object-cover" />
-                {showOverlay && (
-                  <svg
-                    className="pointer-events-none absolute inset-0 h-full w-full"
-                    viewBox="0 0 100 100"
-                    preserveAspectRatio="none"
-                  >
-                    <line x1="50" y1="8" x2="50" y2="92" stroke="rgba(56,189,248,0.55)" strokeWidth="0.35" strokeDasharray="1.5 1.5" />
-                    <line x1="20" y1={hairY} x2="80" y2={hairY} stroke="rgba(255,255,255,0.4)" strokeWidth="0.3" />
-                    <line x1="18" y1={browY} x2="82" y2={browY} stroke="rgba(56,189,248,0.6)" strokeWidth="0.35" />
-                    <line x1="20" y1={noseY} x2="80" y2={noseY} stroke="rgba(56,189,248,0.6)" strokeWidth="0.35" />
-                    <line x1="26" y1={chinY} x2="74" y2={chinY} stroke="rgba(255,255,255,0.45)" strokeWidth="0.35" />
-                    <line x1={lEyeX} y1={eyeY} x2={rEyeX} y2={eyeY} stroke="#38BDF8" strokeWidth="0.4" />
-                    <circle cx={lEyeX} cy={eyeY} r="0.9" fill="#38BDF8" />
-                    <circle cx={rEyeX} cy={eyeY} r="0.9" fill="#38BDF8" />
-                    <polyline
-                      points={`${jawLX},${jawY} 50,${chinY} ${jawRX},${jawY}`}
-                      fill="none"
-                      stroke="#FAFAFA"
-                      strokeWidth="0.45"
-                      strokeOpacity="0.8"
-                    />
-                    <circle cx={jawLX} cy={jawY} r="0.9" fill="#FAFAFA" />
-                    <circle cx={jawRX} cy={jawY} r="0.9" fill="#FAFAFA" />
-                    <circle cx="50" cy={chinY} r="1" fill="#38BDF8" />
-                  </svg>
-                )}
+                <FaceMeshOverlay imageSrc={portrait} showLines={showOverlay} />
               </div>
             </div>
           )}
