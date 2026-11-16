@@ -175,23 +175,31 @@ async function analyzeWithGemini(key: string, frontImage: string, sideImage?: st
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
+      const genConfig: any = {
+        temperature: 0.2,
+        maxOutputTokens: 2000,
+        responseMimeType: "application/json",
+      };
+
+      // thinkingConfig yalnızca 2.5 serisinde desteklenir; 2.0-flash'ta 400 hatası verir
+      if (model.includes("2.5")) {
+        genConfig.thinkingConfig = { thinkingBudget: 0 };
+      }
+
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(18000),
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents: [{ role: "user", parts }],
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 2000,
-            responseMimeType: "application/json",
-            thinkingConfig: { thinkingLevel: "MINIMAL" },
-          },
+          generationConfig: genConfig,
         }),
       });
 
       if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        console.error(`Gemini ${model} failed (${res.status}):`, errBody.slice(0, 300));
         lastErr = `HTTP_${res.status}`;
         continue;
       }
@@ -208,6 +216,7 @@ async function analyzeWithGemini(key: string, frontImage: string, sideImage?: st
       const cleaned = rawText.replace(/^```json\s*|\s*```$/g, "").trim();
       return JSON.parse(cleaned);
     } catch (e: any) {
+      console.error(`Gemini ${model} exception:`, e?.message || e);
       lastErr = e?.message || "GEMINI_ERROR";
     }
   }
@@ -429,9 +438,10 @@ export async function POST(request: NextRequest) {
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch (error: any) {
-    console.error("Analyze route failed:", error?.message || error);
+    const code = typeof error?.message === "string" ? error.message.slice(0, 40) : "UNKNOWN";
+    console.error("Analyze route failed:", code);
     return NextResponse.json(
-      { error: "Analiz sırasında geçici bir sorun oluştu. Lütfen birkaç saniye sonra tekrar dene." },
+      { error: `Analiz sırasında geçici bir sorun oluştu (${code}). Lütfen birkaç saniye sonra tekrar dene.` },
       { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
