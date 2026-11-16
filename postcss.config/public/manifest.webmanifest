@@ -1,0 +1,8 @@
+{
+  "name": "AURA Yüz Analizi",
+  "short_name": "AURA",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090B",
+  "theme_color": "#09090B"
+}
