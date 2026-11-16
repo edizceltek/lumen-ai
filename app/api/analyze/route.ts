@@ -143,4 +143,355 @@ function recordInvalidAttempt(clientAddress: string) {
 }
 
 function cleanGeminiKey() {
-  const k = process.env.GEMINI_API_KEY?.trim().
+  const k = process.env.GEMINI_API_KEY?.trim().replace(/^["']|["']$/g, "");
+  return !k || k.startsWith("your_") ? undefined : k;
+}
+
+async function resolveGeminiModels(key: string): Promise<string[]> {
+  const now = Date.now();
+  if (cachedGeminiModels && cachedGeminiModels.expiresAt > now) {
+    return cachedGeminiModels.models;
+  }
+
+  try {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+      headers: { "x-goog-api-key": key },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const valid = (data.models || [])
+        .filter(
+          (m: any) =>
+            Array.isArray(m.supportedGenerationMethods) &&
+            m.supportedGenerationMethods.includes("generateContent")
+        )
+        .map((m: any) => String(m.name || "").replace(/^models\//, ""))
+        .filter(
+          (n: string) =>
+            n.includes("flash") &&
+            !n.includes("image") &&
+            !n.includes("audio") &&
+            !n.includes("tts") &&
+            !n.includes("lite")
+        );
+
+      if (valid.length > 0) {
+        const ordered = Array.from(
+          new Set([
+            ...(process.env.GEMINI_MODEL?.trim() ? [process.env.GEMINI_MODEL.trim()] : []),
+            ...valid,
+          ])
+        );
+        cachedGeminiModels = { models: ordered, expiresAt: now + 10 * 60_000 };
+        return ordered;
+      }
+    }
+  } catch {}
+
+  return ["gemini-2.5-flash", "gemini-flash-latest"];
+}
+
+async function analyzeWithGemini(key: string, frontImage: string, sideImage?: string) {
+  const front = parseDataUrl(frontImage);
+  if (!front) throw new Error("INVALID_IMAGE");
+
+  const parts: any[] = [
+    {
+      text: "Yüklenen önden yüz fotoğrafını (ve varsa yan profili) 12 metrik üzerinden analiz et, sadece JSON döndür.",
+    },
+    { inlineData: { mimeType: front.mimeType, data: front.data } },
+  ];
+
+  if (typeof sideImage === "string") {
+    const side = parseDataUrl(sideImage);
+    if (side) {
+      parts.push({ inlineData: { mimeType: side.mimeType, data: side.data } });
+    }
+  }
+
+  const models = await resolveGeminiModels(key);
+  let lastErr = "MODEL_UNAVAILABLE";
+
+  for (const model of models.slice(0, 3)) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        signal: AbortSignal.timeout(18000),
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: "user", parts }],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 2000,
+            responseMimeType: "application/json",
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        lastErr = `HTTP_${res.status}`;
+        continue;
+      }
+
+      const data = await res.json();
+      const respParts = data.candidates?.[0]?.content?.parts || [];
+      const rawText = respParts
+        .filter((p: any) => !p.thought && p.text)
+        .map((p: any) => p.text)
+        .join("")
+        .trim();
+
+      if (!rawText) continue;
+      const cleaned = rawText.replace(/^```json\s*|\s*```$/g, "").trim();
+      return JSON.parse(cleaned);
+    } catch (e: any) {
+      lastErr = e?.message || "GEMINI_ERROR";
+    }
+  }
+
+  throw new Error(lastErr);
+}
+
+function normalizeAnalysis(raw: any) {
+  if (!raw || raw.status === "no_face") return raw;
+  const m = raw.metrics || {};
+  const clamp = (v: any, def: number) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : def;
+  };
+  const overall = clamp(m.overall, 75);
+  const rawPot = clamp(m.potential, overall + 9);
+  const potential = Math.min(100, Math.max(overall + 6, Math.min(overall + 15, rawPot)));
+
+  const defaultRecommendations: Record<(typeof REQUIRED_CATEGORIES)[number], string> = {
+    "Cilt Bakımı":
+      "Sabah-akşam nazik yüz temizleyici, bariyer onarıcı nemlendirici ve gündüz SPF 30+ güneş koruyucu rutini oluştur.",
+    "Saç & Sakal Stili":
+      "Yüz oranlarını dikeyde dengelemek için yanları kademeli kısalt (fade) ve çene çizgisini netleştir.",
+    "Yüz & Duruş Egzersizleri":
+      "Günde 10 dakika chin-tuck ve dik baş duruşu pratiği yaparak çene altı hattını belirginleştir.",
+    "Yaşam Tarzı & Ödem Kontrolü":
+      "Günlük 2.5–3L su tüketimi, düzenli uyku ve akşam saatlerinde düşük sodyum ile yüz ödemini azalt.",
+  };
+
+  const rawRecs = Array.isArray(raw.recommendations) ? raw.recommendations : [];
+  const recommendations = REQUIRED_CATEGORIES.map((category) => {
+    const found = rawRecs.find(
+      (item: any) =>
+        item &&
+        typeof item.category === "string" &&
+        item.category.trim() === category &&
+        typeof item.recommendation === "string" &&
+        item.recommendation.trim().length > 0
+    );
+    return {
+      category,
+      recommendation: found ? found.recommendation.trim() : defaultRecommendations[category],
+    };
+  });
+
+  const strongestFeature =
+    typeof raw.strongestFeature === "string" && raw.strongestFeature.trim()
+      ? raw.strongestFeature.trim()
+      : "Göz bölgesi ve yüz simetrisi";
+
+  const improvementArea =
+    typeof raw.improvementArea === "string" && raw.improvementArea.trim()
+      ? raw.improvementArea.trim()
+      : "Cilt dokusu ve çene hattı netliği";
+
+  const summary =
+    typeof raw.summary === "string" && raw.summary.trim()
+      ? raw.summary.trim()
+      : "Yüz oranların dengeli bir temel sunuyor; düzenli cilt bakımı, doğru saç kesimi ve ödem kontrolüyle görünüm keskinliğin belirgin şekilde artabilir.";
+
+  const highRoi = {
+    title:
+      typeof raw.highRoi?.title === "string" && raw.highRoi.title.trim()
+        ? raw.highRoi.title.trim()
+        : improvementArea,
+    action:
+      typeof raw.highRoi?.action === "string" && raw.highRoi.action.trim()
+        ? raw.highRoi.action.trim()
+        : "Sabah SPF + akşam temizlik rutini ve günlük 3L su tüketimiyle ilk 14 günde belirgin netlik kazan.",
+    gain:
+      typeof raw.highRoi?.gain === "string" && raw.highRoi.gain.trim()
+        ? raw.highRoi.gain.trim()
+        : `+${Math.max(4, Math.round((potential - overall) * 0.55))} Puan`,
+  };
+
+  const barberPrescription = {
+    sides:
+      typeof raw.barberPrescription?.sides === "string" && raw.barberPrescription.sides.trim()
+        ? raw.barberPrescription.sides.trim()
+        : "Mid-fade (1.5 mm – 3 mm geçiş), favoriler kulak hizasında keskinleştirilmiş.",
+    top:
+      typeof raw.barberPrescription?.top === "string" && raw.barberPrescription.top.trim()
+        ? raw.barberPrescription.top.trim()
+        : "Üstler 5–7 cm dokulu ve hacimli; yüz oranını dikeyde dengeleyecek doğal bitiş.",
+    beard:
+      typeof raw.barberPrescription?.beard === "string" && raw.barberPrescription.beard.trim()
+        ? raw.barberPrescription.beard.trim()
+        : "3–4 mm kirli sakal; çene köşesinin 1 parmak üstünden net boyun çizgisi.",
+  };
+
+  return {
+    ...raw,
+    status: "success",
+    error: null,
+    summary,
+    strongestFeature,
+    improvementArea,
+    highRoi,
+    barberPrescription,
+    metricObservations:
+      raw.metricObservations && typeof raw.metricObservations === "object"
+        ? raw.metricObservations
+        : {},
+    recommendations,
+    metrics: {
+      overall,
+      potential,
+      jawline: clamp(m.jawline, 74),
+      cheekbones: clamp(m.cheekbones, 74),
+      skinQuality: clamp(m.skinQuality, 73),
+      eyeArea: clamp(m.eyeArea, 76),
+      symmetry: clamp(m.symmetry, 75),
+      faceHarmony: clamp(m.faceHarmony, 76),
+      eyebrows: clamp(m.eyebrows, 75),
+      noseRatio: clamp(m.noseRatio, 74),
+      lipsMouth: clamp(m.lipsMouth, 75),
+      hairline: clamp(m.hairline, 74),
+      facialLeanness: clamp(m.facialLeanness, 73),
+      neckPosture: clamp(m.neckPosture, 74),
+    },
+  };
+}
+
+export async function POST(request: NextRequest) {
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+  if (contentLength > MAX_REQUEST_BYTES) {
+    return NextResponse.json(
+      { error: "İstek boyutu çok büyük. Daha küçük fotoğraflar yükle." },
+      { status: 413, headers: { "Cache-Control": "no-store" } }
+    );
+  }
+
+  const clientAddress = getClientAddress(request);
+  const geminiKey = cleanGeminiKey();
+  const openaiKey = getApiKey();
+  const hasRealKey = Boolean(geminiKey || openaiKey);
+  const demoMode = !hasRealKey && isDemoMode();
+
+  if (!demoMode && exceedsRateLimit(clientAddress)) {
+    return NextResponse.json(
+      { error: "Çok fazla analiz isteği gönderildi. Lütfen bir dakika sonra tekrar dene." },
+      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": "60" } }
+    );
+  }
+
+  if (!demoMode && (getRemainingQuota(clientAddress) === 0 || exceedsInvalidAttempts(clientAddress))) {
+    return NextResponse.json(
+      {
+        error: "Günlük ücretsiz analiz hakkın doldu. Yarın tekrar deneyebilirsin.",
+        quotaExceeded: true,
+        remainingQuota: 0,
+      },
+      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": "86400" } }
+    );
+  }
+
+  if (!hasRealKey && !demoMode) {
+    return NextResponse.json(
+      { error: "Sunucu yapılandırması tamamlanmamış. Lütfen daha sonra tekrar dene." },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
+  }
+
+  try {
+    const body: any = await request.json();
+    const frontImage = body?.frontImage;
+    const sideImage = body?.sideImage;
+
+    if (!isImageDataUrl(frontImage)) {
+      return NextResponse.json(
+        { error: FACE_ERROR },
+        { status: 400, headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
+    let analysis: any;
+
+    if (geminiKey) {
+      analysis = await analyzeWithGemini(
+        geminiKey,
+        frontImage,
+        typeof sideImage === "string" && isImageDataUrl(sideImage) ? sideImage : undefined
+      );
+    } else if (openaiKey) {
+      const openai = new OpenAI({ apiKey: openaiKey });
+      const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+        { type: "text", text: "Yüklenen fotoğrafı 12 metrik üzerinden analiz et ve sadece JSON döndür." },
+        { type: "image_url", image_url: { url: frontImage, detail: "high" } },
+      ];
+      if (typeof sideImage === "string" && isImageDataUrl(sideImage)) {
+        content.push({ type: "image_url", image_url: { url: sideImage, detail: "high" } });
+      }
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content },
+        ],
+      });
+      const raw = completion.choices[0]?.message?.content || "";
+      analysis = JSON.parse(raw.replace(/^```json\s*|\s*```$/g, "").trim());
+    }
+
+    if (analysis?.status === "no_face") {
+      recordInvalidAttempt(clientAddress);
+      return NextResponse.json(
+        { error: FACE_ERROR },
+        { status: 422, headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
+    analysis = normalizeAnalysis(analysis);
+    const remainingQuota = consumeQuota(clientAddress);
+    const plan = isValidPlan(analysis.plan) ? analysis.plan : buildPlan(analysis);
+
+    return NextResponse.json(
+      { ...analysis, plan, remainingQuota },
+      { headers: { "Cache-Control": "no-store" } }
+    );
+  } catch (error: any) {
+    const code = typeof error?.message === "string" ? error.message.slice(0, 40) : "UNKNOWN";
+    console.error("Analyze route failed:", code);
+    return NextResponse.json(
+      { error: `Analiz sırasında geçici bir sorun oluştu (${code}). Lütfen birkaç saniye sonra tekrar dene.` },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  if (process.env.NODE_ENV !== "development") {
+    return NextResponse.json(
+      { error: "Bu işlem yalnızca yerel test ortamında kullanılabilir." },
+      { status: 404 }
+    );
+  }
+  const clientAddress = getClientAddress(request);
+  dailyUsage.delete(clientAddress);
+  dailyInvalidAttempts.delete(clientAddress);
+  requestCounts.delete(clientAddress);
+  return NextResponse.json(
+    { remainingQuota: DAILY_ANALYSIS_LIMIT },
+    { headers: { "Cache-Control": "no-store" } }
+  );
+}
