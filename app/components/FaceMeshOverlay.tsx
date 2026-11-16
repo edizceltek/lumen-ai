@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { detectFaceLandmarks, FaceLandmarks } from "@/lib/faceLandmarker";
+import { detectFaceLandmarks, FaceLandmarks } from "./faceLandmarker";
 
 interface Props {
   imageSrc: string;
