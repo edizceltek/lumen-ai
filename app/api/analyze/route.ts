@@ -7,13 +7,16 @@ export const runtime = "nodejs";
 
 const FACE_ERROR =
   "Yüz net algılanamadı. Lütfen aydınlık bir ortamda önden çekilmiş bir fotoğraf yükle.";
-const MAX_REQUEST_BYTES = 25 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 12 * 1024 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 10;
+const RATE_LIMIT_MAX_REQUESTS = 8;
 const DAILY_ANALYSIS_LIMIT = 5;
+const DAILY_INVALID_ATTEMPT_LIMIT = 4;
 const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 const requestCounts = new Map<string, { count: number; resetAt: number }>();
 const dailyUsage = new Map<string, number[]>();
+const dailyInvalidAttempts = new Map<string, number[]>();
 
 const REQUIRED_CATEGORIES = [
   "Cilt Bakımı",
@@ -52,11 +55,6 @@ const systemPrompt = [
   '    "top": "Üst kısım uzunluk ve doku tarifi",',
   '    "beard": "Sakal ve favori çizgisi tarifi"',
   "  },",
-  '  "landmarks": {',
-  '    "hairlineY": 15-30, "browY": 32-44, "noseBaseY": 52-64, "chinY": 72-88,',
-  '    "leftEyeX": 32-44, "rightEyeX": 56-68, "eyeY": 38-48,',
-  '    "jawLeftX": 25-36, "jawRightX": 64-75, "jawY": 62-74',
-  "  },",
   '  "metricObservations": {',
   '    "jawline": "tek cümle Türkçe gözlem",',
   '    "cheekbones": "tek cümle Türkçe gözlem",',
@@ -83,6 +81,7 @@ const systemPrompt = [
 function isImageDataUrl(value: unknown): value is string {
   return (
     typeof value === "string" &&
+    value.length <= MAX_REQUEST_BYTES &&
     /^data:image\/(jpeg|jpg|png|webp);base64,[a-zA-Z0-9+/=]+$/.test(value)
   );
 }
@@ -94,11 +93,13 @@ function parseDataUrl(dataUrl: string) {
 }
 
 function getClientAddress(request: NextRequest): string {
-  return (
+  const ip =
+    request.headers.get("x-nf-client-connection-ip")?.trim() ||
     request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    "unknown"
-  );
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  if (ip) return ip;
+  const ua = request.headers.get("user-agent") || "anon";
+  return `ua:${ua.slice(0, 64)}`;
 }
 
 function exceedsRateLimit(clientAddress: string): boolean {
@@ -112,22 +113,32 @@ function exceedsRateLimit(clientAddress: string): boolean {
   return entry.count > RATE_LIMIT_MAX_REQUESTS;
 }
 
-function getDailyUsage(clientAddress: string) {
+function getDailyEntries(map: Map<string, number[]>, clientAddress: string) {
   const cutoff = Date.now() - DAILY_WINDOW_MS;
-  const entries = (dailyUsage.get(clientAddress) ?? []).filter((t) => t > cutoff);
-  dailyUsage.set(clientAddress, entries);
+  const entries = (map.get(clientAddress) ?? []).filter((t) => t > cutoff);
+  map.set(clientAddress, entries);
   return entries;
 }
 
 function getRemainingQuota(clientAddress: string) {
-  return Math.max(0, DAILY_ANALYSIS_LIMIT - getDailyUsage(clientAddress).length);
+  return Math.max(0, DAILY_ANALYSIS_LIMIT - getDailyEntries(dailyUsage, clientAddress).length);
 }
 
 function consumeQuota(clientAddress: string) {
-  const entries = getDailyUsage(clientAddress);
+  const entries = getDailyEntries(dailyUsage, clientAddress);
   entries.push(Date.now());
   dailyUsage.set(clientAddress, entries);
   return Math.max(0, DAILY_ANALYSIS_LIMIT - entries.length);
+}
+
+function exceedsInvalidAttempts(clientAddress: string): boolean {
+  return getDailyEntries(dailyInvalidAttempts, clientAddress).length >= DAILY_INVALID_ATTEMPT_LIMIT;
+}
+
+function recordInvalidAttempt(clientAddress: string) {
+  const entries = getDailyEntries(dailyInvalidAttempts, clientAddress);
+  entries.push(Date.now());
+  dailyInvalidAttempts.set(clientAddress, entries);
 }
 
 function cleanGeminiKey() {
@@ -135,34 +146,9 @@ function cleanGeminiKey() {
   return !k || k.startsWith("your_") ? undefined : k;
 }
 
-async function getValidModels(key: string): Promise<string[]> {
-  try {
-    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
-      headers: { "x-goog-api-key": key },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.models || [])
-      .filter(
-        (m: any) =>
-          Array.isArray(m.supportedGenerationMethods) &&
-          m.supportedGenerationMethods.includes("generateContent")
-      )
-      .map((m: any) => String(m.name || "").replace(/^models\//, ""))
-      .filter((n: string) => n.includes("flash") && !n.includes("image"));
-  } catch {
-    return [];
-  }
-}
-
-async function analyzeWithGemini(
-  key: string,
-  frontImage: string,
-  sideImage?: string
-) {
+async function analyzeWithGemini(key: string, frontImage: string, sideImage?: string) {
   const front = parseDataUrl(frontImage);
-  if (!front) throw new Error("Gecersiz on fotograf formati.");
+  if (!front) throw new Error("INVALID_IMAGE");
 
   const parts: any[] = [
     {
@@ -179,34 +165,26 @@ async function analyzeWithGemini(
   }
 
   const envModel = process.env.GEMINI_MODEL?.trim();
-  const discovered = await getValidModels(key);
   const models = Array.from(
-    new Set([
-      ...(envModel ? [envModel] : []),
-      ...discovered,
-      "gemini-2.5-flash",
-      "gemini-2.0-flash",
-    ])
+    new Set([...(envModel ? [envModel] : []), "gemini-2.5-flash", "gemini-2.0-flash"])
   );
 
-  let lastErr = "Model yanit vermedi.";
+  let lastErr = "MODEL_UNAVAILABLE";
 
   for (const model of models) {
     try {
-      const url =
-        `https://generativelanguage.googleapis.com/v1beta/models/` +
-        `${encodeURIComponent(model)}:generateContent`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        signal: AbortSignal.timeout(35000),
+        signal: AbortSignal.timeout(30000),
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents: [{ role: "user", parts }],
           generationConfig: {
             temperature: 0.2,
-            maxOutputTokens: 2200,
+            maxOutputTokens: 2000,
             responseMimeType: "application/json",
             thinkingConfig: { thinkingLevel: "MINIMAL" },
           },
@@ -214,12 +192,7 @@ async function analyzeWithGemini(
       });
 
       if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        try {
-          lastErr = JSON.parse(t)?.error?.message || `HTTP ${res.status}`;
-        } catch {
-          lastErr = `HTTP ${res.status}`;
-        }
+        lastErr = `HTTP_${res.status}`;
         continue;
       }
 
@@ -235,7 +208,7 @@ async function analyzeWithGemini(
       const cleaned = rawText.replace(/^```json\s*|\s*```$/g, "").trim();
       return JSON.parse(cleaned);
     } catch (e: any) {
-      lastErr = e?.message || "Analiz hatasi";
+      lastErr = e?.message || "GEMINI_ERROR";
     }
   }
 
@@ -254,10 +227,14 @@ function normalizeAnalysis(raw: any) {
   const potential = Math.min(100, Math.max(overall + 6, Math.min(overall + 15, rawPot)));
 
   const defaultRecommendations: Record<(typeof REQUIRED_CATEGORIES)[number], string> = {
-    "Cilt Bakımı": "Sabah-akşam nazik yüz temizleyici, bariyer onarıcı nemlendirici ve gündüz SPF 30+ güneş koruyucu rutini oluştur.",
-    "Saç & Sakal Stili": "Yüz oranlarını dikeyde dengelemek için yanları kademeli kısalt (fade) ve çene çizgisini netleştir.",
-    "Yüz & Duruş Egzersizleri": "Günde 10 dakika chin-tuck ve dik baş duruşu pratiği yaparak çene altı hattını belirginleştir.",
-    "Yaşam Tarzı & Ödem Kontrolü": "Günlük 2.5–3L su tüketimi, düzenli uyku ve akşam saatlerinde düşük sodyum ile yüz ödemini azalt.",
+    "Cilt Bakımı":
+      "Sabah-akşam nazik yüz temizleyici, bariyer onarıcı nemlendirici ve gündüz SPF 30+ güneş koruyucu rutini oluştur.",
+    "Saç & Sakal Stili":
+      "Yüz oranlarını dikeyde dengelemek için yanları kademeli kısalt (fade) ve çene çizgisini netleştir.",
+    "Yüz & Duruş Egzersizleri":
+      "Günde 10 dakika chin-tuck ve dik baş duruşu pratiği yaparak çene altı hattını belirginleştir.",
+    "Yaşam Tarzı & Ödem Kontrolü":
+      "Günlük 2.5–3L su tüketimi, düzenli uyku ve akşam saatlerinde düşük sodyum ile yüz ödemini azalt.",
   };
 
   const rawRecs = Array.isArray(raw.recommendations) ? raw.recommendations : [];
@@ -376,7 +353,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!demoMode && getRemainingQuota(clientAddress) === 0) {
+  if (!demoMode && (getRemainingQuota(clientAddress) === 0 || exceedsInvalidAttempts(clientAddress))) {
     return NextResponse.json(
       {
         error: "Günlük ücretsiz analiz hakkın doldu. Yarın tekrar deneyebilirsin.",
@@ -389,7 +366,7 @@ export async function POST(request: NextRequest) {
 
   if (!hasRealKey && !demoMode) {
     return NextResponse.json(
-      { error: "API anahtarı bulunamadı. .env.local dosyasına GEMINI_API_KEY ekle." },
+      { error: "Sunucu yapılandırması tamamlanmamış. Lütfen daha sonra tekrar dene." },
       { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
@@ -412,7 +389,7 @@ export async function POST(request: NextRequest) {
       analysis = await analyzeWithGemini(
         geminiKey,
         frontImage,
-        typeof sideImage === "string" ? sideImage : undefined
+        typeof sideImage === "string" && isImageDataUrl(sideImage) ? sideImage : undefined
       );
     } else if (openaiKey) {
       const openai = new OpenAI({ apiKey: openaiKey });
@@ -420,7 +397,7 @@ export async function POST(request: NextRequest) {
         { type: "text", text: "Yüklenen fotoğrafı 12 metrik üzerinden analiz et ve sadece JSON döndür." },
         { type: "image_url", image_url: { url: frontImage, detail: "high" } },
       ];
-      if (typeof sideImage === "string") {
+      if (typeof sideImage === "string" && isImageDataUrl(sideImage)) {
         content.push({ type: "image_url", image_url: { url: sideImage, detail: "high" } });
       }
       const completion = await openai.chat.completions.create({
@@ -436,6 +413,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (analysis?.status === "no_face") {
+      recordInvalidAttempt(clientAddress);
       return NextResponse.json(
         { error: FACE_ERROR },
         { status: 422, headers: { "Cache-Control": "no-store" } }
@@ -451,9 +429,9 @@ export async function POST(request: NextRequest) {
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch (error: any) {
-    console.error("Analyze route failed", error);
+    console.error("Analyze route failed:", error?.message || error);
     return NextResponse.json(
-      { error: `Analiz hatası: ${error?.message || "Lütfen tekrar dene."}` },
+      { error: "Analiz sırasında geçici bir sorun oluştu. Lütfen birkaç saniye sonra tekrar dene." },
       { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
@@ -468,6 +446,7 @@ export async function DELETE(request: NextRequest) {
   }
   const clientAddress = getClientAddress(request);
   dailyUsage.delete(clientAddress);
+  dailyInvalidAttempts.delete(clientAddress);
   requestCounts.delete(clientAddress);
   return NextResponse.json(
     { remainingQuota: DAILY_ANALYSIS_LIMIT },
