@@ -15,6 +15,7 @@ const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const chatRateMap = new Map<string, { count: number; resetAt: number }>();
 const dailyChatUsage = new Map<string, number[]>();
+let cachedChatModels: { models: string[]; expiresAt: number } | null = null;
 
 function cleanKey(val: string | undefined) {
   const k = val?.trim().replace(/^["']|["']$/g, "");
@@ -136,21 +137,61 @@ function buildPrompt(ctx: any) {
   ].join("\n");
 }
 
-async function askGemini(key: string, messages: ChatMessage[], ctx: any) {
-  const envModel = process.env.GEMINI_MODEL?.trim();
-  const models = Array.from(
-    new Set([...(envModel ? [envModel] : []), "gemini-2.5-flash", "gemini-2.0-flash"])
-  );
+async function resolveChatModels(key: string): Promise<string[]> {
+  const now = Date.now();
+  if (cachedChatModels && cachedChatModels.expiresAt > now) {
+    return cachedChatModels.models;
+  }
 
+  try {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+      headers: { "x-goog-api-key": key },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const valid = (data.models || [])
+        .filter(
+          (m: any) =>
+            Array.isArray(m.supportedGenerationMethods) &&
+            m.supportedGenerationMethods.includes("generateContent")
+        )
+        .map((m: any) => String(m.name || "").replace(/^models\//, ""))
+        .filter(
+          (n: string) =>
+            n.includes("flash") &&
+            !n.includes("image") &&
+            !n.includes("audio") &&
+            !n.includes("tts")
+        );
+
+      if (valid.length > 0) {
+        const ordered = Array.from(
+          new Set([
+            ...(process.env.GEMINI_MODEL?.trim() ? [process.env.GEMINI_MODEL.trim()] : []),
+            ...valid,
+          ])
+        );
+        cachedChatModels = { models: ordered, expiresAt: now + 10 * 60_000 };
+        return ordered;
+      }
+    }
+  } catch {}
+
+  return ["gemini-2.5-flash", "gemini-flash-latest"];
+}
+
+async function askGemini(key: string, messages: ChatMessage[], ctx: any) {
+  const models = await resolveChatModels(key);
   let lastErr = "MODEL_UNAVAILABLE";
 
-  for (const model of models) {
+  for (const model of models.slice(0, 3)) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(15000),
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: buildPrompt(ctx) }] },
           contents: messages.map((m) => ({
@@ -160,7 +201,6 @@ async function askGemini(key: string, messages: ChatMessage[], ctx: any) {
           generationConfig: {
             temperature: 0.4,
             maxOutputTokens: 420,
-            thinkingConfig: { thinkingLevel: "MINIMAL" },
           },
         }),
       });
