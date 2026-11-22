@@ -1,6 +1,5 @@
-import OpenAI from "openai";
 import { NextRequest, NextResponse } from "next/server";
-import { getApiKey, isDemoMode } from "../../lib/env";
+import { isDemoMode } from "../../lib/env";
 import { buildPlan, isValidPlan } from "../../lib/plan";
 
 export const runtime = "nodejs";
@@ -13,7 +12,6 @@ const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const rateMap = new Map<string, { count: number; resetAt: number }>();
 const dailyUsage = new Map<string, number[]>();
 const invalidUsage = new Map<string, number[]>();
-let cachedGroqModel: string | null = null;
 
 const CATEGORIES = [
   "Cilt Bakımı",
@@ -78,78 +76,6 @@ function extractJson(raw: string) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
-async function getGroqCandidateModels(key: string): Promise<string[]> {
-  if (cachedGroqModel) return [cachedGroqModel];
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/models", {
-      headers: { Authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(4000),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const ids: string[] = (data.data || []).map((m: any) => String(m.id || ""));
-      const vision = ids.filter(
-        (id) =>
-          (id.includes("vision") || id.includes("scout") || id.includes("maverick") || id.includes("pixtral") || id.includes("llava")) &&
-          !id.includes("guard")
-      );
-      if (vision.length > 0) return vision;
-    }
-  } catch {}
-  return [
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
-    "llama-3.2-90b-vision-preview",
-    "llama-3.2-11b-vision-preview",
-  ];
-}
-
-async function analyzeGroq(key: string, frontImg: string, sideImg?: string) {
-  const content: any[] = [
-    { type: "text", text: `${systemPrompt}\n\nYüklenen yüz fotoğrafını 12 metrik üzerinden değerlendir ve SADECE geçerli JSON döndür.` },
-    { type: "image_url", image_url: { url: frontImg } },
-  ];
-  if (sideImg) content.push({ type: "image_url", image_url: { url: sideImg } });
-
-  const models = await getGroqCandidateModels(key);
-  let lastErr = "GROQ_NO_VISION_MODEL";
-
-  for (const model of models) {
-    try {
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        signal: AbortSignal.timeout(12000),
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          max_tokens: 1400,
-          messages: [{ role: "user", content }],
-        }),
-      });
-
-      if (!res.ok) {
-        const errTxt = await res.text().catch(() => "");
-        lastErr = `GROQ_${res.status}_${errTxt.slice(0, 40)}`;
-        continue;
-      }
-
-      const data = await res.json();
-      const text = data.choices?.[0]?.message?.content || "";
-      if (text) {
-        cachedGroqModel = model;
-        return extractJson(text);
-      }
-    } catch (e: any) {
-      lastErr = `GROQ_${e?.message || "ERR"}`;
-    }
-  }
-  throw new Error(lastErr);
-}
-
 async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
   const front = parseDataUrl(frontImg);
   if (!front) throw new Error("INVALID_IMG");
@@ -162,16 +88,25 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
     if (side) parts.push({ inlineData: { mimeType: side.mimeType, data: side.data } });
   }
 
-  for (const model of ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]) {
+  const models = [
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.5-flash",
+    "gemini-flash-latest",
+  ];
+
+  let lastErr = "GEMINI_ERR";
+  for (const model of models) {
     try {
       const genConfig: any = { temperature: 0.2, maxOutputTokens: 1400, responseMimeType: "application/json" };
-      if (model.includes("2.5")) genConfig.thinkingConfig = { thinkingBudget: 0 };
+      if (model === "gemini-2.5-flash") genConfig.thinkingConfig = { thinkingBudget: 0 };
+
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          signal: AbortSignal.timeout(9000),
+          signal: AbortSignal.timeout(8000),
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt }] },
             contents: [{ role: "user", parts }],
@@ -179,7 +114,14 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
           }),
         }
       );
-      if (!res.ok) continue;
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        const msg = errBody?.error?.message || `HTTP_${res.status}`;
+        lastErr = `${model}: ${msg.slice(0, 45)}`;
+        continue;
+      }
+
       const data = await res.json();
       const text = (data.candidates?.[0]?.content?.parts || [])
         .filter((p: any) => !p.thought && p.text)
@@ -187,9 +129,11 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
         .join("")
         .trim();
       if (text) return extractJson(text);
-    } catch {}
+    } catch (e: any) {
+      lastErr = `${model}: ${e?.message || "ERR"}`;
+    }
   }
-  throw new Error("GEMINI_BUSY");
+  throw new Error(lastErr);
 }
 
 function normalize(raw: any) {
@@ -255,11 +199,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "İstek boyutu çok büyük." }, { status: 413, headers: { "Cache-Control": "no-store" } });
   }
   const ip = getClientIp(req);
-  const groqKey = cleanKey(process.env.GROQ_API_KEY);
   const geminiKey = cleanKey(process.env.GEMINI_API_KEY);
-  const openaiKey = getApiKey();
-  const hasKey = Boolean(groqKey || geminiKey || openaiKey);
-  const demo = !hasKey && isDemoMode();
+  const demo = !geminiKey && isDemoMode();
 
   if (!demo && checkRate(ip)) {
     return NextResponse.json({ error: "Çok fazla istek. Bir dakika sonra dene." }, { status: 429, headers: { "Cache-Control": "no-store" } });
@@ -267,7 +208,7 @@ export async function POST(req: NextRequest) {
   if (!demo && (getEntries(dailyUsage, ip).length >= DAILY_LIMIT || getEntries(invalidUsage, ip).length >= 4)) {
     return NextResponse.json({ error: "Günlük ücretsiz analiz hakkın doldu.", quotaExceeded: true, remainingQuota: 0 }, { status: 429, headers: { "Cache-Control": "no-store" } });
   }
-  if (!hasKey && !demo) {
+  if (!geminiKey && !demo) {
     return NextResponse.json({ error: "Sunucu yapılandırması eksik." }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 
@@ -277,26 +218,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: FACE_ERROR }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }
     const side = isImageUrl(body?.sideImage) ? body.sideImage : undefined;
-    let analysis: any;
-
-    if (groqKey) {
-      analysis = await analyzeGroq(groqKey, body.frontImage, side);
-    } else if (geminiKey) {
-      analysis = await analyzeGemini(geminiKey, body.frontImage, side);
-    } else if (openaiKey) {
-      const openai = new OpenAI({ apiKey: openaiKey });
-      const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
-        { type: "text", text: "Fotoğrafı 12 metrik üzerinden analiz et, JSON döndür." },
-        { type: "image_url", image_url: { url: body.frontImage, detail: "high" } },
-      ];
-      if (side) content.push({ type: "image_url", image_url: { url: side, detail: "high" } });
-      const comp = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.2,
-        messages: [{ role: "system", content: systemPrompt }, { role: "user", content }],
-      });
-      analysis = extractJson(comp.choices[0]?.message?.content || "");
-    }
+    let analysis: any = await analyzeGemini(geminiKey!, body.frontImage, side);
 
     if (analysis?.status === "no_face") {
       getEntries(invalidUsage, ip).push(Date.now());
@@ -310,8 +232,8 @@ export async function POST(req: NextRequest) {
     const plan = isValidPlan(analysis.plan) ? analysis.plan : buildPlan(analysis);
     return NextResponse.json({ ...analysis, plan, remainingQuota }, { headers: { "Cache-Control": "no-store" } });
   } catch (err: any) {
-    const code = typeof err?.message === "string" ? err.message.slice(0, 60) : "ERR";
-    return NextResponse.json({ error: `Analiz sırasında geçici bir sorun oluştu (${code}). Lütfen tekrar dene.` }, { status: 500, headers: { "Cache-Control": "no-store" } });
+    const code = typeof err?.message === "string" ? err.message.slice(0, 70) : "ERR";
+    return NextResponse.json({ error: `Analiz hatası (${code}). Lütfen tekrar dene.` }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }
 
