@@ -149,18 +149,26 @@ function cleanGeminiKey() {
 
 async function callGeminiModel(key: string, model: string, parts: any[]) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+
+  const genConfig: any = {
+    temperature: 0.2,
+    maxOutputTokens: 1500,
+    responseMimeType: "application/json",
+  };
+
+  // Düşünme modunu kapatarak yanıt süresini ~12 sn'den ~3 sn'ye düşürür
+  if (model.includes("2.5") || model.includes("3")) {
+    genConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
+
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-    signal: AbortSignal.timeout(8500),
+    signal: AbortSignal.timeout(22000),
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: "user", parts }],
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 1600,
-        responseMimeType: "application/json",
-      },
+      generationConfig: genConfig,
     }),
   });
 
@@ -246,220 +254,4 @@ function normalizeAnalysis(raw: any) {
       "Günlük 2.5–3L su tüketimi, düzenli uyku ve akşam saatlerinde düşük sodyum ile yüz ödemini azalt.",
   };
 
-  const rawRecs = Array.isArray(raw.recommendations) ? raw.recommendations : [];
-  const recommendations = REQUIRED_CATEGORIES.map((category) => {
-    const found = rawRecs.find(
-      (item: any) =>
-        item &&
-        typeof item.category === "string" &&
-        item.category.trim() === category &&
-        typeof item.recommendation === "string" &&
-        item.recommendation.trim().length > 0
-    );
-    return {
-      category,
-      recommendation: found ? found.recommendation.trim() : defaultRecommendations[category],
-    };
-  });
-
-  const strongestFeature =
-    typeof raw.strongestFeature === "string" && raw.strongestFeature.trim()
-      ? raw.strongestFeature.trim()
-      : "Göz bölgesi ve yüz simetrisi";
-
-  const improvementArea =
-    typeof raw.improvementArea === "string" && raw.improvementArea.trim()
-      ? raw.improvementArea.trim()
-      : "Cilt dokusu ve çene hattı netliği";
-
-  const summary =
-    typeof raw.summary === "string" && raw.summary.trim()
-      ? raw.summary.trim()
-      : "Yüz oranların dengeli bir temel sunuyor; düzenli cilt bakımı, doğru saç kesimi ve ödem kontrolüyle görünüm keskinliğin belirgin şekilde artabilir.";
-
-  const highRoi = {
-    title:
-      typeof raw.highRoi?.title === "string" && raw.highRoi.title.trim()
-        ? raw.highRoi.title.trim()
-        : improvementArea,
-    action:
-      typeof raw.highRoi?.action === "string" && raw.highRoi.action.trim()
-        ? raw.highRoi.action.trim()
-        : "Sabah SPF + akşam temizlik rutini ve günlük 3L su tüketimiyle ilk 14 günde belirgin netlik kazan.",
-    gain:
-      typeof raw.highRoi?.gain === "string" && raw.highRoi.gain.trim()
-        ? raw.highRoi.gain.trim()
-        : `+${Math.max(4, Math.round((potential - overall) * 0.55))} Puan`,
-  };
-
-  const barberPrescription = {
-    sides:
-      typeof raw.barberPrescription?.sides === "string" && raw.barberPrescription.sides.trim()
-        ? raw.barberPrescription.sides.trim()
-        : "Mid-fade (1.5 mm – 3 mm geçiş), favoriler kulak hizasında keskinleştirilmiş.",
-    top:
-      typeof raw.barberPrescription?.top === "string" && raw.barberPrescription.top.trim()
-        ? raw.barberPrescription.top.trim()
-        : "Üstler 5–7 cm dokulu ve hacimli; yüz oranını dikeyde dengeleyecek doğal bitiş.",
-    beard:
-      typeof raw.barberPrescription?.beard === "string" && raw.barberPrescription.beard.trim()
-        ? raw.barberPrescription.beard.trim()
-        : "3–4 mm kirli sakal; çene köşesinin 1 parmak üstünden net boyun çizgisi.",
-  };
-
-  return {
-    ...raw,
-    status: "success",
-    error: null,
-    summary,
-    strongestFeature,
-    improvementArea,
-    highRoi,
-    barberPrescription,
-    metricObservations:
-      raw.metricObservations && typeof raw.metricObservations === "object"
-        ? raw.metricObservations
-        : {},
-    recommendations,
-    metrics: {
-      overall,
-      potential,
-      jawline: clamp(m.jawline, 74),
-      cheekbones: clamp(m.cheekbones, 74),
-      skinQuality: clamp(m.skinQuality, 73),
-      eyeArea: clamp(m.eyeArea, 76),
-      symmetry: clamp(m.symmetry, 75),
-      faceHarmony: clamp(m.faceHarmony, 76),
-      eyebrows: clamp(m.eyebrows, 75),
-      noseRatio: clamp(m.noseRatio, 74),
-      lipsMouth: clamp(m.lipsMouth, 75),
-      hairline: clamp(m.hairline, 74),
-      facialLeanness: clamp(m.facialLeanness, 73),
-      neckPosture: clamp(m.neckPosture, 74),
-    },
-  };
-}
-
-export async function POST(request: NextRequest) {
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_REQUEST_BYTES) {
-    return NextResponse.json(
-      { error: "İstek boyutu çok büyük. Daha küçük fotoğraflar yükle." },
-      { status: 413, headers: { "Cache-Control": "no-store" } }
-    );
-  }
-
-  const clientAddress = getClientAddress(request);
-  const geminiKey = cleanGeminiKey();
-  const openaiKey = getApiKey();
-  const hasRealKey = Boolean(geminiKey || openaiKey);
-  const demoMode = !hasRealKey && isDemoMode();
-
-  if (!demoMode && exceedsRateLimit(clientAddress)) {
-    return NextResponse.json(
-      { error: "Çok fazla analiz isteği gönderildi. Lütfen bir dakika sonra tekrar dene." },
-      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": "60" } }
-    );
-  }
-
-  if (!demoMode && (getRemainingQuota(clientAddress) === 0 || exceedsInvalidAttempts(clientAddress))) {
-    return NextResponse.json(
-      {
-        error: "Günlük ücretsiz analiz hakkın doldu. Yarın tekrar deneyebilirsin.",
-        quotaExceeded: true,
-        remainingQuota: 0,
-      },
-      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": "86400" } }
-    );
-  }
-
-  if (!hasRealKey && !demoMode) {
-    return NextResponse.json(
-      { error: "Sunucu yapılandırması tamamlanmamış. Lütfen daha sonra tekrar dene." },
-      { status: 500, headers: { "Cache-Control": "no-store" } }
-    );
-  }
-
-  try {
-    const body: any = await request.json();
-    const frontImage = body?.frontImage;
-    const sideImage = body?.sideImage;
-
-    if (!isImageDataUrl(frontImage)) {
-      return NextResponse.json(
-        { error: FACE_ERROR },
-        { status: 400, headers: { "Cache-Control": "no-store" } }
-      );
-    }
-
-    let analysis: any;
-
-    if (geminiKey) {
-      analysis = await analyzeWithGemini(
-        geminiKey,
-        frontImage,
-        typeof sideImage === "string" && isImageDataUrl(sideImage) ? sideImage : undefined
-      );
-    } else if (openaiKey) {
-      const openai = new OpenAI({ apiKey: openaiKey });
-      const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
-        { type: "text", text: "Yüklenen fotoğrafı 12 metrik üzerinden analiz et ve sadece JSON döndür." },
-        { type: "image_url", image_url: { url: frontImage, detail: "high" } },
-      ];
-      if (typeof sideImage === "string" && isImageDataUrl(sideImage)) {
-        content.push({ type: "image_url", image_url: { url: sideImage, detail: "high" } });
-      }
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.2,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content },
-        ],
-      });
-      const raw = completion.choices[0]?.message?.content || "";
-      analysis = JSON.parse(raw.replace(/^```json\s*|\s*```$/g, "").trim());
-    }
-
-    if (analysis?.status === "no_face") {
-      recordInvalidAttempt(clientAddress);
-      return NextResponse.json(
-        { error: FACE_ERROR },
-        { status: 422, headers: { "Cache-Control": "no-store" } }
-      );
-    }
-
-    analysis = normalizeAnalysis(analysis);
-    const remainingQuota = consumeQuota(clientAddress);
-    const plan = isValidPlan(analysis.plan) ? analysis.plan : buildPlan(analysis);
-
-    return NextResponse.json(
-      { ...analysis, plan, remainingQuota },
-      { headers: { "Cache-Control": "no-store" } }
-    );
-  } catch (error: any) {
-    const code = typeof error?.message === "string" ? error.message.slice(0, 40) : "UNKNOWN";
-    console.error("Analyze route failed:", code);
-    return NextResponse.json(
-      { error: `Analiz sırasında geçici bir sorun oluştu (${code}). Lütfen birkaç saniye sonra tekrar dene.` },
-      { status: 500, headers: { "Cache-Control": "no-store" } }
-    );
-  }
-}
-
-export async function DELETE(request: NextRequest) {
-  if (process.env.NODE_ENV !== "development") {
-    return NextResponse.json(
-      { error: "Bu işlem yalnızca yerel test ortamında kullanılabilir." },
-      { status: 404 }
-    );
-  }
-  const clientAddress = getClientAddress(request);
-  dailyUsage.delete(clientAddress);
-  dailyInvalidAttempts.delete(clientAddress);
-  requestCounts.delete(clientAddress);
-  return NextResponse.json(
-    { remainingQuota: DAILY_ANALYSIS_LIMIT },
-    { headers: { "Cache-Control": "no-store" } }
-  );
-}
+  const rawRecs = Array.isArray(raw
