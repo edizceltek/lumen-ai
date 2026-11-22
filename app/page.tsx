@@ -32,7 +32,7 @@ async function compressPhoto(file: File) {
       element.onerror = () => reject(new Error("Fotoğraf okunamadı."));
       element.src = source;
     });
-    const maxDim = 1100;
+    const maxDim = 960;
     const scale = Math.min(1, maxDim / Math.max(image.width, image.height));
     const width = Math.round(image.width * scale);
     const height = Math.round(image.height * scale);
@@ -44,7 +44,7 @@ async function compressPhoto(file: File) {
     context.fillStyle = "#09090B";
     context.fillRect(0, 0, width, height);
     context.drawImage(image, 0, 0, width, height);
-    return canvas.toDataURL("image/jpeg", 0.88);
+    return canvas.toDataURL("image/jpeg", 0.85);
   } finally {
     URL.revokeObjectURL(source);
   }
@@ -65,7 +65,7 @@ async function mirrorDataUrl(dataUrl: string): Promise<string> {
   ctx.translate(canvas.width, 0);
   ctx.scale(-1, 1);
   ctx.drawImage(image, 0, 0);
-  return canvas.toDataURL("image/jpeg", 0.88);
+  return canvas.toDataURL("image/jpeg", 0.85);
 }
 
 async function renderFramedPhoto(dataUrl: string, frame: FrameTransform): Promise<string> {
@@ -76,8 +76,8 @@ async function renderFramedPhoto(dataUrl: string, frame: FrameTransform): Promis
     el.src = dataUrl;
   });
 
-  const outW = 800;
-  const outH = 625;
+  const outW = 640;
+  const outH = 500;
   const canvas = document.createElement("canvas");
   canvas.width = outW;
   canvas.height = outH;
@@ -94,7 +94,7 @@ async function renderFramedPhoto(dataUrl: string, frame: FrameTransform): Promis
   const offsetY = (outH - drawH) / 2 + (frame.y / 100) * outH;
 
   ctx.drawImage(image, offsetX, offsetY, drawW, drawH);
-  return canvas.toDataURL("image/jpeg", 0.85);
+  return canvas.toDataURL("image/jpeg", 0.82);
 }
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
@@ -129,11 +129,11 @@ async function createSampleFace() {
   try {
     const image = await new Promise<HTMLImageElement>((resolve, reject) => { const el = new Image(); el.onload = () => resolve(el); el.onerror = () => reject(new Error("Örnek görsel oluşturulamadı.")); el.src = url; });
     const canvas = document.createElement("canvas");
-    canvas.width = 800; canvas.height = 1000;
+    canvas.width = 640; canvas.height = 800;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Örnek görsel oluşturulamadı.");
-    context.drawImage(image, 0, 0, 800, 1000);
-    return canvas.toDataURL("image/jpeg", 0.85);
+    context.drawImage(image, 0, 0, 640, 800);
+    return canvas.toDataURL("image/jpeg", 0.82);
   } finally { URL.revokeObjectURL(url); }
 }
 
@@ -383,7 +383,6 @@ function UploadSlot({
         )}
       </div>
 
-      {/* Hassas Konum & Yakınlaştırma Çubukları */}
       {image && (
         <div className="space-y-2 border-t border-white/[.07] bg-black/40 px-4 py-2.5">
           <div className="flex items-center gap-2.5">
@@ -482,7 +481,13 @@ export default function Home() {
           body: JSON.stringify({ frontImage, sideImage }),
           signal: controller.signal,
         });
-        const payload = await response.json() as AnalysisResult & { error?: string; quotaExceeded?: boolean; remainingQuota?: number };
+        const rawText = await response.text();
+        let payload: AnalysisResult & { error?: string; quotaExceeded?: boolean; remainingQuota?: number };
+        try {
+          payload = JSON.parse(rawText);
+        } catch {
+          throw new Error("Sunucu yanıt süresi doldu. Lütfen tekrar dene.");
+        }
         if (payload.quotaExceeded) {
           setRemainingQuota(0); setQuotaReached(true); setScreen("upload"); return;
         }
