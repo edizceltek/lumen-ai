@@ -79,7 +79,7 @@ async function callGemini(key: string, model: string, parts: any[]) {
     {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      signal: AbortSignal.timeout(22000),
+      signal: AbortSignal.timeout(12000),
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts }],
@@ -111,7 +111,14 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
     const side = parseDataUrl(sideImg);
     if (side) parts.push({ inlineData: { mimeType: side.mimeType, data: side.data } });
   }
-  const models = Array.from(new Set([...(cachedModel ? [cachedModel] : []), "gemini-2.5-flash", "gemini-flash-latest"]));
+  const models = Array.from(
+    new Set([
+      ...(cachedModel ? [cachedModel] : []),
+      "gemini-2.5-flash",
+      "gemini-flash-latest",
+      "gemini-2.5-flash-lite",
+    ])
+  );
   let lastErr = "MODEL_ERR";
   for (const m of models) {
     try {
@@ -120,7 +127,7 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
       return out;
     } catch (e: any) {
       lastErr = e?.message || "ERR";
-      if (!lastErr.includes("404")) break;
+      if (lastErr.includes("401") || lastErr.includes("403")) break;
     }
   }
   throw new Error(lastErr);
