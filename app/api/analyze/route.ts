@@ -76,6 +76,8 @@ function extractJson(raw: string) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
   const front = parseDataUrl(frontImg);
   if (!front) throw new Error("INVALID_IMG");
@@ -90,13 +92,16 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
 
   const models = [
     "gemini-2.5-flash-lite",
+    "gemini-2.0-flash-lite",
     "gemini-2.0-flash",
     "gemini-2.5-flash",
     "gemini-flash-latest",
+    "gemini-2.5-pro",
   ];
 
   let lastErr = "GEMINI_ERR";
-  for (const model of models) {
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
     try {
       const genConfig: any = { temperature: 0.2, maxOutputTokens: 1400, responseMimeType: "application/json" };
       if (model === "gemini-2.5-flash") genConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -106,7 +111,7 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
         {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(7000),
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt }] },
             contents: [{ role: "user", parts }],
@@ -119,6 +124,7 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
         const errBody = await res.json().catch(() => null);
         const msg = errBody?.error?.message || `HTTP_${res.status}`;
         lastErr = `${model}: ${msg.slice(0, 45)}`;
+        if (i < models.length - 1) await sleep(600);
         continue;
       }
 
