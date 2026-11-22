@@ -17,7 +17,7 @@ const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const requestCounts = new Map<string, { count: number; resetAt: number }>();
 const dailyUsage = new Map<string, number[]>();
 const dailyInvalidAttempts = new Map<string, number[]>();
-let cachedGeminiModels: { models: string[]; expiresAt: number } | null = null;
+let cachedWorkingModel: string | null = null;
 
 const REQUIRED_CATEGORIES = [
   "Cilt Bakımı",
@@ -147,49 +147,38 @@ function cleanGeminiKey() {
   return !k || k.startsWith("your_") ? undefined : k;
 }
 
-async function resolveGeminiModels(key: string): Promise<string[]> {
-  const now = Date.now();
-  if (cachedGeminiModels && cachedGeminiModels.expiresAt > now) {
-    return cachedGeminiModels.models;
+async function callGeminiModel(key: string, model: string, parts: any[]) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    signal: AbortSignal.timeout(8500),
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: "user", parts }],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 1600,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`HTTP_${res.status}`);
   }
 
-  try {
-    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
-      headers: { "x-goog-api-key": key },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const valid = (data.models || [])
-        .filter(
-          (m: any) =>
-            Array.isArray(m.supportedGenerationMethods) &&
-            m.supportedGenerationMethods.includes("generateContent")
-        )
-        .map((m: any) => String(m.name || "").replace(/^models\//, ""))
-        .filter(
-          (n: string) =>
-            n.includes("flash") &&
-            !n.includes("image") &&
-            !n.includes("audio") &&
-            !n.includes("tts") &&
-            !n.includes("lite")
-        );
+  const data = await res.json();
+  const respParts = data.candidates?.[0]?.content?.parts || [];
+  const rawText = respParts
+    .filter((p: any) => !p.thought && p.text)
+    .map((p: any) => p.text)
+    .join("")
+    .trim();
 
-      if (valid.length > 0) {
-        const ordered = Array.from(
-          new Set([
-            ...(process.env.GEMINI_MODEL?.trim() ? [process.env.GEMINI_MODEL.trim()] : []),
-            ...valid,
-          ])
-        );
-        cachedGeminiModels = { models: ordered, expiresAt: now + 10 * 60_000 };
-        return ordered;
-      }
-    }
-  } catch {}
-
-  return ["gemini-2.5-flash", "gemini-flash-latest"];
+  if (!rawText) throw new Error("EMPTY_RESPONSE");
+  const cleaned = rawText.replace(/^```json\s*|\s*```$/g, "").trim();
+  return JSON.parse(cleaned);
 }
 
 async function analyzeWithGemini(key: string, frontImage: string, sideImage?: string) {
@@ -210,46 +199,25 @@ async function analyzeWithGemini(key: string, frontImage: string, sideImage?: st
     }
   }
 
-  const models = await resolveGeminiModels(key);
+  const envModel = process.env.GEMINI_MODEL?.trim();
+  const candidates = Array.from(
+    new Set([
+      ...(cachedWorkingModel ? [cachedWorkingModel] : []),
+      ...(envModel ? [envModel] : []),
+      "gemini-2.5-flash",
+      "gemini-flash-latest",
+    ])
+  );
+
   let lastErr = "MODEL_UNAVAILABLE";
-
-  for (const model of models.slice(0, 3)) {
+  for (const model of candidates) {
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        signal: AbortSignal.timeout(18000),
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ role: "user", parts }],
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 2000,
-            responseMimeType: "application/json",
-          },
-        }),
-      });
-
-      if (!res.ok) {
-        lastErr = `HTTP_${res.status}`;
-        continue;
-      }
-
-      const data = await res.json();
-      const respParts = data.candidates?.[0]?.content?.parts || [];
-      const rawText = respParts
-        .filter((p: any) => !p.thought && p.text)
-        .map((p: any) => p.text)
-        .join("")
-        .trim();
-
-      if (!rawText) continue;
-      const cleaned = rawText.replace(/^```json\s*|\s*```$/g, "").trim();
-      return JSON.parse(cleaned);
+      const result = await callGeminiModel(key, model, parts);
+      cachedWorkingModel = model;
+      return result;
     } catch (e: any) {
       lastErr = e?.message || "GEMINI_ERROR";
+      if (!lastErr.includes("404")) break;
     }
   }
 
