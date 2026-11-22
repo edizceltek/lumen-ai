@@ -13,7 +13,6 @@ const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const rateMap = new Map<string, { count: number; resetAt: number }>();
 const dailyUsage = new Map<string, number[]>();
 const invalidUsage = new Map<string, number[]>();
-let cachedModel: string | null = null;
 
 const CATEGORIES = [
   "Cilt Bakımı",
@@ -65,39 +64,40 @@ function getEntries(map: Map<string, number[]>, ip: string) {
   return list;
 }
 
-function cleanGeminiKey() {
-  const k = process.env.GEMINI_API_KEY?.trim().replace(/^["']|["']$/g, "");
+function cleanKey(raw: string | undefined) {
+  const k = raw?.trim().replace(/^["']|["']$/g, "");
   return !k || k.startsWith("your_") ? undefined : k;
 }
 
-async function callGemini(key: string, model: string, parts: any[]) {
-  const genConfig: any = { temperature: 0.2, maxOutputTokens: 1400, responseMimeType: "application/json" };
-  if (model.includes("2.5") || model.includes("3")) genConfig.thinkingConfig = { thinkingBudget: 0 };
+async function analyzeGroq(key: string, frontImg: string, sideImg?: string) {
+  const groq = new OpenAI({ apiKey: key, baseURL: "https://api.groq.com/openai/v1" });
+  const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+    { type: "text", text: "Yüz fotoğrafını 12 metrik üzerinden analiz et, sadece geçerli JSON döndür." },
+    { type: "image_url", image_url: { url: frontImg } },
+  ];
+  if (sideImg) content.push({ type: "image_url", image_url: { url: sideImg } });
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      signal: AbortSignal.timeout(12000),
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts }],
-        generationConfig: genConfig,
-      }),
+  const models = ["meta-llama/llama-4-scout-17b-16e-instruct", "llama-3.2-90b-vision-preview", "llama-3.2-11b-vision-preview"];
+  let lastErr = "GROQ_ERR";
+  for (const model of models) {
+    try {
+      const comp = await groq.chat.completions.create({
+        model,
+        temperature: 0.2,
+        max_tokens: 1400,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content },
+        ],
+      });
+      const text = (comp.choices[0]?.message?.content || "").replace(/^```json\s*|\s*```$/g, "").trim();
+      if (text) return JSON.parse(text);
+    } catch (e: any) {
+      lastErr = e?.message || "GROQ_ERR";
     }
-  );
-  if (!res.ok) throw new Error(`HTTP_${res.status}`);
-  const data = await res.json();
-  const text = (data.candidates?.[0]?.content?.parts || [])
-    .filter((p: any) => !p.thought && p.text)
-    .map((p: any) => p.text)
-    .join("")
-    .trim()
-    .replace(/^```json\s*|\s*```$/g, "")
-    .trim();
-  if (!text) throw new Error("EMPTY");
-  return JSON.parse(text);
+  }
+  throw new Error(lastErr);
 }
 
 async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
@@ -111,26 +111,37 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
     const side = parseDataUrl(sideImg);
     if (side) parts.push({ inlineData: { mimeType: side.mimeType, data: side.data } });
   }
-  const models = Array.from(
-    new Set([
-      ...(cachedModel ? [cachedModel] : []),
-      "gemini-2.5-flash",
-      "gemini-flash-latest",
-      "gemini-2.5-flash-lite",
-    ])
-  );
-  let lastErr = "MODEL_ERR";
-  for (const m of models) {
+
+  for (const model of ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]) {
     try {
-      const out = await callGemini(key, m, parts);
-      cachedModel = m;
-      return out;
-    } catch (e: any) {
-      lastErr = e?.message || "ERR";
-      if (lastErr.includes("401") || lastErr.includes("403")) break;
-    }
+      const genConfig: any = { temperature: 0.2, maxOutputTokens: 1400, responseMimeType: "application/json" };
+      if (model.includes("2.5")) genConfig.thinkingConfig = { thinkingBudget: 0 };
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+          signal: AbortSignal.timeout(9000),
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: "user", parts }],
+            generationConfig: genConfig,
+          }),
+        }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      const text = (data.candidates?.[0]?.content?.parts || [])
+        .filter((p: any) => !p.thought && p.text)
+        .map((p: any) => p.text)
+        .join("")
+        .trim()
+        .replace(/^```json\s*|\s*```$/g, "")
+        .trim();
+      if (text) return JSON.parse(text);
+    } catch {}
   }
-  throw new Error(lastErr);
+  throw new Error("GEMINI_BUSY");
 }
 
 function normalize(raw: any) {
@@ -196,9 +207,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "İstek boyutu çok büyük." }, { status: 413, headers: { "Cache-Control": "no-store" } });
   }
   const ip = getClientIp(req);
-  const geminiKey = cleanGeminiKey();
+  const groqKey = cleanKey(process.env.GROQ_API_KEY);
+  const geminiKey = cleanKey(process.env.GEMINI_API_KEY);
   const openaiKey = getApiKey();
-  const hasKey = Boolean(geminiKey || openaiKey);
+  const hasKey = Boolean(groqKey || geminiKey || openaiKey);
   const demo = !hasKey && isDemoMode();
 
   if (!demo && checkRate(ip)) {
@@ -216,16 +228,25 @@ export async function POST(req: NextRequest) {
     if (!isImageUrl(body?.frontImage)) {
       return NextResponse.json({ error: FACE_ERROR }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }
+    const side = isImageUrl(body?.sideImage) ? body.sideImage : undefined;
     let analysis: any;
-    if (geminiKey) {
-      analysis = await analyzeGemini(geminiKey, body.frontImage, isImageUrl(body?.sideImage) ? body.sideImage : undefined);
+
+    if (groqKey) {
+      try {
+        analysis = await analyzeGroq(groqKey, body.frontImage, side);
+      } catch (e) {
+        if (geminiKey) analysis = await analyzeGemini(geminiKey, body.frontImage, side);
+        else throw e;
+      }
+    } else if (geminiKey) {
+      analysis = await analyzeGemini(geminiKey, body.frontImage, side);
     } else if (openaiKey) {
       const openai = new OpenAI({ apiKey: openaiKey });
       const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
         { type: "text", text: "Fotoğrafı 12 metrik üzerinden analiz et, JSON döndür." },
         { type: "image_url", image_url: { url: body.frontImage, detail: "high" } },
       ];
-      if (isImageUrl(body?.sideImage)) content.push({ type: "image_url", image_url: { url: body.sideImage, detail: "high" } });
+      if (side) content.push({ type: "image_url", image_url: { url: side, detail: "high" } });
       const comp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0.2,
