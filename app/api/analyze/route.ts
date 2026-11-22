@@ -13,6 +13,7 @@ const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const rateMap = new Map<string, { count: number; resetAt: number }>();
 const dailyUsage = new Map<string, number[]>();
 const invalidUsage = new Map<string, number[]>();
+let cachedGroqModel: string | null = null;
 
 const CATEGORIES = [
   "Cilt Bakımı",
@@ -77,6 +78,32 @@ function extractJson(raw: string) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
+async function getGroqCandidateModels(key: string): Promise<string[]> {
+  if (cachedGroqModel) return [cachedGroqModel];
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const ids: string[] = (data.data || []).map((m: any) => String(m.id || ""));
+      const vision = ids.filter(
+        (id) =>
+          (id.includes("vision") || id.includes("scout") || id.includes("maverick") || id.includes("pixtral") || id.includes("llava")) &&
+          !id.includes("guard")
+      );
+      if (vision.length > 0) return vision;
+    }
+  } catch {}
+  return [
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "llama-3.2-90b-vision-preview",
+    "llama-3.2-11b-vision-preview",
+  ];
+}
+
 async function analyzeGroq(key: string, frontImg: string, sideImg?: string) {
   const content: any[] = [
     { type: "text", text: `${systemPrompt}\n\nYüklenen yüz fotoğrafını 12 metrik üzerinden değerlendir ve SADECE geçerli JSON döndür.` },
@@ -84,12 +111,9 @@ async function analyzeGroq(key: string, frontImg: string, sideImg?: string) {
   ];
   if (sideImg) content.push({ type: "image_url", image_url: { url: sideImg } });
 
-  const models = [
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
-  ];
+  const models = await getGroqCandidateModels(key);
+  let lastErr = "GROQ_NO_VISION_MODEL";
 
-  let lastErr = "GROQ_ERR";
   for (const model of models) {
     try {
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -115,7 +139,10 @@ async function analyzeGroq(key: string, frontImg: string, sideImg?: string) {
 
       const data = await res.json();
       const text = data.choices?.[0]?.message?.content || "";
-      if (text) return extractJson(text);
+      if (text) {
+        cachedGroqModel = model;
+        return extractJson(text);
+      }
     } catch (e: any) {
       lastErr = `GROQ_${e?.message || "ERR"}`;
     }
