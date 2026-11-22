@@ -24,8 +24,8 @@ const CATEGORIES = [
 const systemPrompt = [
   "Sen objektif bir yüz estetiği ve kişisel bakım analistisin. Yalnızca görünür özellikleri değerlendir, tıbbi teşhis verme.",
   `Önden net insan yüzü yoksa SADECE şunu döndür: {"status":"no_face","error":"${FACE_ERROR}","metrics":null}`,
-  "Net yüz varsa SADECE geçerli JSON döndür:",
-  '{"status":"success","error":null,"metrics":{"overall":0-100,"potential":0-100,"jawline":0-100,"cheekbones":0-100,"skinQuality":0-100,"eyeArea":0-100,"symmetry":0-100,"faceHarmony":0-100,"eyebrows":0-100,"noseRatio":0-100,"lipsMouth":0-100,"hairline":0-100,"facialLeanness":0-100,"neckPosture":0-100},"summary":"1-2 cümle Türkçe özet","strongestFeature":"En güçlü özellik","improvementArea":"Öncelikli gelişim alanı","highRoi":{"title":"En etkili hızlı hamle","action":"Kısa açıklama","gain":"+5 Puan"},"barberPrescription":{"sides":"Yanlar kesim tarifi","top":"Üst kısım tarifi","beard":"Sakal çizgisi tarifi"},"metricObservations":{"jawline":"tek cümle","cheekbones":"tek cümle","skinQuality":"tek cümle","eyeArea":"tek cümle","symmetry":"tek cümle","faceHarmony":"tek cümle","eyebrows":"tek cümle","noseRatio":"tek cümle","lipsMouth":"tek cümle","hairline":"tek cümle","facialLeanness":"tek cümle","neckPosture":"tek cümle"},"recommendations":[{"category":"Cilt Bakımı","recommendation":"..."},{"category":"Saç & Sakal Stili","recommendation":"..."},{"category":"Yüz & Duruş Egzersizleri","recommendation":"..."},{"category":"Yaşam Tarzı & Ödem Kontrolü","recommendation":"..."}]}',
+  "Net yüz varsa SADECE geçerli JSON döndür (markdown veya açıklama ekleme):",
+  '{"status":"success","error":null,"metrics":{"overall":76,"potential":86,"jawline":75,"cheekbones":76,"skinQuality":74,"eyeArea":78,"symmetry":77,"faceHarmony":77,"eyebrows":76,"noseRatio":75,"lipsMouth":76,"hairline":75,"facialLeanness":74,"neckPosture":75},"summary":"1-2 cümle Türkçe özet","strongestFeature":"En güçlü özellik","improvementArea":"Öncelikli gelişim alanı","highRoi":{"title":"En etkili hızlı hamle","action":"Kısa açıklama","gain":"+5 Puan"},"barberPrescription":{"sides":"Yanlar kesim tarifi","top":"Üst kısım tarifi","beard":"Sakal çizgisi tarifi"},"metricObservations":{"jawline":"tek cümle","cheekbones":"tek cümle","skinQuality":"tek cümle","eyeArea":"tek cümle","symmetry":"tek cümle","faceHarmony":"tek cümle","eyebrows":"tek cümle","noseRatio":"tek cümle","lipsMouth":"tek cümle","hairline":"tek cümle","facialLeanness":"tek cümle","neckPosture":"tek cümle"},"recommendations":[{"category":"Cilt Bakımı","recommendation":"..."},{"category":"Saç & Sakal Stili","recommendation":"..."},{"category":"Yüz & Duruş Egzersizleri","recommendation":"..."},{"category":"Yaşam Tarzı & Ödem Kontrolü","recommendation":"..."}]}',
 ].join("\n");
 
 function isImageUrl(v: unknown): v is string {
@@ -69,32 +69,55 @@ function cleanKey(raw: string | undefined) {
   return !k || k.startsWith("your_") ? undefined : k;
 }
 
+function extractJson(raw: string) {
+  const cleaned = raw.replace(/^```json\s*|\s*```$/g, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("JSON_PARSE_ERR");
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
 async function analyzeGroq(key: string, frontImg: string, sideImg?: string) {
-  const groq = new OpenAI({ apiKey: key, baseURL: "https://api.groq.com/openai/v1" });
-  const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
-    { type: "text", text: "Yüz fotoğrafını 12 metrik üzerinden analiz et, sadece geçerli JSON döndür." },
+  const content: any[] = [
+    { type: "text", text: `${systemPrompt}\n\nYüklenen yüz fotoğrafını 12 metrik üzerinden değerlendir ve SADECE geçerli JSON döndür.` },
     { type: "image_url", image_url: { url: frontImg } },
   ];
   if (sideImg) content.push({ type: "image_url", image_url: { url: sideImg } });
 
-  const models = ["meta-llama/llama-4-scout-17b-16e-instruct", "llama-3.2-90b-vision-preview", "llama-3.2-11b-vision-preview"];
+  const models = [
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+  ];
+
   let lastErr = "GROQ_ERR";
   for (const model of models) {
     try {
-      const comp = await groq.chat.completions.create({
-        model,
-        temperature: 0.2,
-        max_tokens: 1400,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content },
-        ],
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        signal: AbortSignal.timeout(12000),
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          max_tokens: 1400,
+          messages: [{ role: "user", content }],
+        }),
       });
-      const text = (comp.choices[0]?.message?.content || "").replace(/^```json\s*|\s*```$/g, "").trim();
-      if (text) return JSON.parse(text);
+
+      if (!res.ok) {
+        const errTxt = await res.text().catch(() => "");
+        lastErr = `GROQ_${res.status}_${errTxt.slice(0, 40)}`;
+        continue;
+      }
+
+      const data = await res.json();
+      const text = data.choices?.[0]?.message?.content || "";
+      if (text) return extractJson(text);
     } catch (e: any) {
-      lastErr = e?.message || "GROQ_ERR";
+      lastErr = `GROQ_${e?.message || "ERR"}`;
     }
   }
   throw new Error(lastErr);
@@ -135,10 +158,8 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
         .filter((p: any) => !p.thought && p.text)
         .map((p: any) => p.text)
         .join("")
-        .trim()
-        .replace(/^```json\s*|\s*```$/g, "")
         .trim();
-      if (text) return JSON.parse(text);
+      if (text) return extractJson(text);
     } catch {}
   }
   throw new Error("GEMINI_BUSY");
@@ -232,12 +253,7 @@ export async function POST(req: NextRequest) {
     let analysis: any;
 
     if (groqKey) {
-      try {
-        analysis = await analyzeGroq(groqKey, body.frontImage, side);
-      } catch (e) {
-        if (geminiKey) analysis = await analyzeGemini(geminiKey, body.frontImage, side);
-        else throw e;
-      }
+      analysis = await analyzeGroq(groqKey, body.frontImage, side);
     } else if (geminiKey) {
       analysis = await analyzeGemini(geminiKey, body.frontImage, side);
     } else if (openaiKey) {
@@ -252,7 +268,7 @@ export async function POST(req: NextRequest) {
         temperature: 0.2,
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content }],
       });
-      analysis = JSON.parse((comp.choices[0]?.message?.content || "").replace(/^```json\s*|\s*```$/g, "").trim());
+      analysis = extractJson(comp.choices[0]?.message?.content || "");
     }
 
     if (analysis?.status === "no_face") {
@@ -267,7 +283,7 @@ export async function POST(req: NextRequest) {
     const plan = isValidPlan(analysis.plan) ? analysis.plan : buildPlan(analysis);
     return NextResponse.json({ ...analysis, plan, remainingQuota }, { headers: { "Cache-Control": "no-store" } });
   } catch (err: any) {
-    const code = typeof err?.message === "string" ? err.message.slice(0, 40) : "ERR";
+    const code = typeof err?.message === "string" ? err.message.slice(0, 60) : "ERR";
     return NextResponse.json({ error: `Analiz sırasında geçici bir sorun oluştu (${code}). Lütfen tekrar dene.` }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }
