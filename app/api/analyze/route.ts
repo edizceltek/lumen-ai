@@ -12,6 +12,7 @@ const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const rateMap = new Map<string, { count: number; resetAt: number }>();
 const dailyUsage = new Map<string, number[]>();
 const invalidUsage = new Map<string, number[]>();
+let cachedModels: string[] | null = null;
 
 const CATEGORIES = [
   "Cilt Bakımı",
@@ -76,6 +77,42 @@ function extractJson(raw: string) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
+async function resolveActiveModels(key: string): Promise<string[]> {
+  if (cachedModels && cachedModels.length > 0) return cachedModels;
+  const fallback = [
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+    "gemini-3.1-pro-preview",
+    "gemini-pro-latest",
+  ];
+  try {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+      headers: { "x-goog-api-key": key },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const valid: string[] = (data.models || [])
+        .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent"))
+        .map((m: any) => String(m.name || "").replace(/^models\//, ""))
+        .filter((id: string) => id.includes("gemini") && !id.includes("embedding") && !id.includes("tts") && !id.includes("image"));
+
+      if (valid.length > 0) {
+        const prioritized = [
+          ...valid.filter((id) => id.includes("flash") && !id.includes("thinking")),
+          ...valid.filter((id) => id.includes("pro")),
+          ...valid,
+        ];
+        cachedModels = Array.from(new Set(prioritized)).slice(0, 8);
+        return cachedModels;
+      }
+    }
+  } catch {}
+  return fallback;
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
@@ -90,32 +127,26 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
     if (side) parts.push({ inlineData: { mimeType: side.mimeType, data: side.data } });
   }
 
-  const models = [
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash",
-    "gemini-flash-latest",
-    "gemini-2.5-pro",
-  ];
-
+  const models = await resolveActiveModels(key);
   let lastErr = "GEMINI_ERR";
+
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     try {
-      const genConfig: any = { temperature: 0.2, maxOutputTokens: 1400, responseMimeType: "application/json" };
-      if (model === "gemini-2.5-flash") genConfig.thinkingConfig = { thinkingBudget: 0 };
-
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          signal: AbortSignal.timeout(7000),
+          signal: AbortSignal.timeout(9000),
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt }] },
             contents: [{ role: "user", parts }],
-            generationConfig: genConfig,
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 1400,
+              responseMimeType: "application/json",
+            },
           }),
         }
       );
@@ -124,7 +155,7 @@ async function analyzeGemini(key: string, frontImg: string, sideImg?: string) {
         const errBody = await res.json().catch(() => null);
         const msg = errBody?.error?.message || `HTTP_${res.status}`;
         lastErr = `${model}: ${msg.slice(0, 45)}`;
-        if (i < models.length - 1) await sleep(600);
+        if (i < models.length - 1) await sleep(500);
         continue;
       }
 
