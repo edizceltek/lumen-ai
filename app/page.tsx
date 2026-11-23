@@ -32,7 +32,7 @@ async function compressPhoto(file: File) {
       element.onerror = () => reject(new Error("Fotoğraf okunamadı."));
       element.src = source;
     });
-    const maxDim = 960;
+    const maxDim = 820;
     const scale = Math.min(1, maxDim / Math.max(image.width, image.height));
     const width = Math.round(image.width * scale);
     const height = Math.round(image.height * scale);
@@ -44,7 +44,7 @@ async function compressPhoto(file: File) {
     context.fillStyle = "#09090B";
     context.fillRect(0, 0, width, height);
     context.drawImage(image, 0, 0, width, height);
-    return canvas.toDataURL("image/jpeg", 0.85);
+    return canvas.toDataURL("image/jpeg", 0.82);
   } finally {
     URL.revokeObjectURL(source);
   }
@@ -65,7 +65,7 @@ async function mirrorDataUrl(dataUrl: string): Promise<string> {
   ctx.translate(canvas.width, 0);
   ctx.scale(-1, 1);
   ctx.drawImage(image, 0, 0);
-  return canvas.toDataURL("image/jpeg", 0.85);
+  return canvas.toDataURL("image/jpeg", 0.82);
 }
 
 async function renderFramedPhoto(dataUrl: string, frame: FrameTransform): Promise<string> {
@@ -76,8 +76,8 @@ async function renderFramedPhoto(dataUrl: string, frame: FrameTransform): Promis
     el.src = dataUrl;
   });
 
-  const outW = 640;
-  const outH = 500;
+  const outW = 600;
+  const outH = 480;
   const canvas = document.createElement("canvas");
   canvas.width = outW;
   canvas.height = outH;
@@ -94,7 +94,7 @@ async function renderFramedPhoto(dataUrl: string, frame: FrameTransform): Promis
   const offsetY = (outH - drawH) / 2 + (frame.y / 100) * outH;
 
   ctx.drawImage(image, offsetX, offsetY, drawW, drawH);
-  return canvas.toDataURL("image/jpeg", 0.82);
+  return canvas.toDataURL("image/jpeg", 0.8);
 }
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
@@ -133,7 +133,7 @@ async function createSampleFace() {
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Örnek görsel oluşturulamadı.");
     context.drawImage(image, 0, 0, 640, 800);
-    return canvas.toDataURL("image/jpeg", 0.82);
+    return canvas.toDataURL("image/jpeg", 0.8);
   } finally { URL.revokeObjectURL(url); }
 }
 
@@ -190,12 +190,116 @@ function Logo({ large = false }: { large?: boolean }) {
   );
 }
 
-function FaceGuide() {
+function FaceGuide({ scanning = false }: { scanning?: boolean }) {
+  const landmarks: [number, number][] = [
+    [150, 56],
+    [110, 88], [190, 88],
+    [96, 132], [204, 132],
+    [122, 136], [178, 136],
+    [150, 140],
+    [150, 182],
+    [134, 192], [166, 192],
+    [128, 226], [150, 224], [172, 226],
+    [104, 212], [196, 212],
+    [118, 260], [182, 260],
+    [150, 294],
+  ];
+
   return (
-    <>
-      <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 h-[76%] w-[44%] -translate-x-1/2 -translate-y-1/2 rounded-[48%] border-2 border-dashed border-ice/75 shadow-[0_0_24px_rgba(56,189,248,0.25)]" />
-      <div className="pointer-events-none absolute left-1/2 top-[12%] z-10 h-[76%] w-px -translate-x-1/2 bg-gradient-to-b from-transparent via-ice/45 to-transparent" />
-    </>
+    <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
+      <svg
+        viewBox="0 0 300 340"
+        preserveAspectRatio="xMidYMid slice"
+        className="h-full w-full"
+        aria-hidden="true"
+      >
+        {/* Dış yüz çerçevesi */}
+        <ellipse
+          cx="150"
+          cy="170"
+          rx="68"
+          ry="124"
+          fill="none"
+          stroke="rgba(56, 189, 248, 0.75)"
+          strokeWidth="1.6"
+          strokeDasharray="6 5"
+        />
+
+        {/* Merkez dikey simetri ekseni */}
+        <line
+          x1="150"
+          y1="30"
+          x2="150"
+          y2="310"
+          stroke="rgba(56, 189, 248, 0.45)"
+          strokeWidth="1"
+          strokeDasharray="3 3"
+        />
+
+        {/* Göz hizası yatay ekseni */}
+        <line
+          x1="74"
+          y1="136"
+          x2="226"
+          y2="136"
+          stroke="rgba(56, 189, 248, 0.35)"
+          strokeWidth="1"
+          strokeDasharray="3 3"
+        />
+
+        {/* Elmacık - çene oran çizgileri */}
+        {scanning && (
+          <g stroke="rgba(125, 211, 252, 0.55)" strokeWidth="1" fill="none">
+            {/* Kaş kemeri */}
+            <path d="M104 122 Q124 114 142 122" />
+            <path d="M158 122 Q176 114 196 122" />
+            {/* Göz üçgenleri */}
+            <polygon points="108,136 122,130 138,136 122,142" />
+            <polygon points="162,136 178,130 192,136 178,142" />
+            {/* Burun köprüsü ve üçgeni */}
+            <polyline points="150,124 150,182 134,192 166,192 150,182" />
+            {/* Elmacık & Jawline üçgen ağı */}
+            <polyline points="96,132 104,212 118,260 150,294 182,260 196,212 204,132" />
+            <line x1="96" y1="132" x2="150" y2="182" />
+            <line x1="204" y1="132" x2="150" y2="182" />
+            <line x1="104" y1="212" x2="150" y2="224" />
+            <line x1="196" y1="212" x2="150" y2="224" />
+            <line x1="118" y1="260" x2="150" y2="224" />
+            <line x1="182" y1="260" x2="150" y2="224" />
+          </g>
+        )}
+
+        {/* Biyometrik ölçüm noktaları */}
+        {scanning &&
+          landmarks.map(([cx, cy], idx) => (
+            <g key={idx}>
+              <circle cx={cx} cy={cy} r="4.5" fill="rgba(56, 189, 248, 0.22)" />
+              <circle cx={cx} cy={cy} r="2" fill="#7DD3FC" />
+            </g>
+          ))}
+      </svg>
+
+      {scanning && (
+        <>
+          <style>{`
+            @keyframes lumenLaserSweep {
+              0% { top: 8%; opacity: 0.25; }
+              15% { opacity: 1; }
+              50% { top: 88%; opacity: 1; }
+              85% { opacity: 1; }
+              100% { top: 8%; opacity: 0.25; }
+            }
+            .lumen-laser-bar {
+              animation: lumenLaserSweep 2.4s ease-in-out infinite;
+            }
+          `}</style>
+          <div className="lumen-laser-bar absolute left-4 right-4 z-20 -translate-y-1/2">
+            <div className="h-[2px] w-full bg-gradient-to-r from-transparent via-[#38BDF8] to-transparent shadow-[0_0_16px_2px_rgba(56,189,248,0.95)]" />
+            <div className="h-10 w-full bg-gradient-to-b from-[#38BDF8]/20 to-transparent" />
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -655,7 +759,7 @@ export default function Home() {
 
       {screen === "upload" && <section className="fade-up"><header className="mb-6 flex items-center justify-between"><button aria-label="Geri dön" onClick={() => setScreen("landing")} className="grid size-10 place-items-center rounded-full border border-white/[.09] text-white/75"><Icon name="back" className="size-5" /></button><Logo /><span className="w-10" /></header><div className="mb-5"><p className="text-[11px] font-medium tracking-[.16em] text-ice">ADIM 01 / 02</p><h1 className="mt-1.5 text-[28px] font-medium tracking-[-.045em]">Net fotoğraflar ekle</h1><p className="mt-1.5 text-sm leading-5 text-white/45">Yüzünü parmağınla veya alttaki çubuklarla kesikli çizgiye hizala.</p></div><div className="glass mb-4 flex items-center justify-between rounded-2xl px-4 py-3"><div><p className="text-[11px] text-white/42">Kalan Günlük Analiz Hakkı</p><p className="mt-1 font-mono text-sm tabular-nums text-ice">{remainingQuota}/{DAILY_LIMIT}</p></div><div className="flex gap-1.5">{Array.from({ length: DAILY_LIMIT }).map((_, index) => <span key={index} className={`size-2 rounded-full ${index < remainingQuota ? "bg-ice" : "bg-white/15"}`} />)}</div></div>{quotaReached || remainingQuota === 0 ? <div className="glass rounded-[22px] p-5 text-center"><p className="text-sm leading-6 text-white/78">Günlük ücretsiz analiz hakların doldu. Yarın yeni haklarınla tekrar analiz yapabilirsin.</p>{isLocalhost && <button onClick={() => void resetTestQuota()} className="mt-4 text-xs font-medium text-ice">Test Hakkını Sıfırla</button>}</div> : <><div className="space-y-3.5"><UploadSlot title="Önden Görünüm" image={frontPhoto} frame={frontFrame} onFrameChange={setFrontFrame} onFile={(file) => void loadFile(file, "front")} onFlip={() => void flipPhoto("front")} /><UploadSlot title="Yan Profil" optional image={profilePhoto} frame={sideFrame} onFrameChange={setSideFrame} onFile={(file) => void loadFile(file, "side")} onFlip={() => void flipPhoto("side")} /></div><div className="glass mt-4 flex gap-3 rounded-2xl p-3.5"><div className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-ice/10 text-ice"><Icon name="spark" className="size-3.5" /></div><p className="text-[12px] leading-5 text-white/53">Doğal ışıkta, kameraya düz bakarak çek. Gözlük, şapka ve yoğun filtre kullanma.</p></div>{fileError && <p className="mt-3.5 rounded-2xl border border-red-400/20 bg-red-400/[.06] px-4 py-3 text-[12px] leading-5 text-red-200/90">{fileError}</p>}<button disabled={!frontPhoto} onClick={() => void startAnalysis()} className="mt-4 flex h-13 sm:h-14 w-full items-center justify-center gap-3 rounded-2xl bg-white text-sm font-semibold text-obsidian transition disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/30 active:scale-[.985]">Yüzümü Analiz Et <Icon name="arrow" className="size-[18px]" /></button>{isLocalhost && <button type="button" onClick={() => void quickTest()} className="mt-2.5 flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-ice/40 text-[13px] font-medium text-ice transition hover:bg-ice/[.06] active:scale-[.985]"><Icon name="spark" className="size-4" /> Örnek Fotoğrafla Hızlı Test Et</button>}</>}</section>}
 
-      {screen === "scan" && <section className="flex flex-1 flex-col fade-up"><header className="flex justify-center"><Logo /></header><div className="flex flex-1 flex-col justify-center"><div className="relative mx-auto aspect-[.82] w-full max-w-[300px] overflow-hidden rounded-[30px] border border-white/[.12] bg-surface">{(framedFrontForResult || frontPhoto) && <img src={framedFrontForResult || frontPhoto} alt="Analiz edilen yüz" className="h-full w-full object-cover opacity-70 grayscale-[.15]" />}<div className="absolute inset-0 bg-gradient-to-b from-ice/[.03] via-transparent to-ice/[.08]" /><FaceGuide />{!analysisError && <><div className="scan-line absolute left-0 right-0 z-10 h-px bg-ice shadow-[0_0_18px_3px_rgba(56,189,248,.85)]" /><div className="absolute left-0 right-0 h-20 bg-gradient-to-b from-ice/[.16] to-transparent scan-line" /></>}</div><div className="mt-8 text-center">{analysisError ? <div className="glass rounded-2xl p-5"><p className="text-sm leading-6 text-white/75">{analysisError}</p><button onClick={() => setScreen("upload")} className="mt-4 text-sm font-medium text-ice">Fotoğrafları düzenle</button></div> : <><div className="mx-auto mb-4 flex justify-center gap-1.5">{scanSteps.map((_, index) => <span key={index} className={`h-1 rounded-full transition-all duration-500 ${index === step ? "w-6 bg-ice" : "w-1 bg-white/20"}`} />)}</div><p className="h-6 text-sm text-white/75 transition-all" key={step}>{scanSteps[step]}</p><p className="mt-1.5 text-[11px] text-white/35">Bu işlem birkaç saniye sürebilir</p></>}</div></div></section>}
+      {screen === "scan" && <section className="flex flex-1 flex-col fade-up"><header className="flex justify-center"><Logo /></header><div className="flex flex-1 flex-col justify-center"><div className="relative mx-auto aspect-[.82] w-full max-w-[300px] overflow-hidden rounded-[30px] border border-white/[.12] bg-surface">{(framedFrontForResult || frontPhoto) && <img src={framedFrontForResult || frontPhoto} alt="Analiz edilen yüz" className="h-full w-full object-cover opacity-75 grayscale-[.1]" />}<div className="absolute inset-0 bg-gradient-to-b from-ice/[.04] via-transparent to-ice/[.1]" /><FaceGuide scanning={!analysisError} /></div><div className="mt-8 text-center">{analysisError ? <div className="glass rounded-2xl p-5"><p className="text-sm leading-6 text-white/75">{analysisError}</p><button onClick={() => setScreen("upload")} className="mt-4 text-sm font-medium text-ice">Fotoğrafları düzenle</button></div> : <><div className="mx-auto mb-4 flex justify-center gap-1.5">{scanSteps.map((_, index) => <span key={index} className={`h-1 rounded-full transition-all duration-500 ${index === step ? "w-6 bg-ice" : "w-1 bg-white/20"}`} />)}</div><p className="h-6 text-sm text-white/75 transition-all" key={step}>{scanSteps[step]}</p><p className="mt-1.5 text-[11px] text-white/35">Bu işlem birkaç saniye sürebilir</p></>}</div></div></section>}
 
       {screen === "result" && analysis?.demo && <div className="mb-4 rounded-2xl border border-ice/25 bg-ice/[.06] px-4 py-2.5 text-center text-[11px] text-ice">DEMO MODU: örnek veriler gösteriliyor (API anahtarı tanımlı değil)</div>}
       {screen === "result" && analysis && <ResultsDashboard analysis={analysis} portrait={framedFrontForResult || frontPhoto} onNewAnalysis={reset} />}
