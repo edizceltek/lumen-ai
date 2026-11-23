@@ -20,6 +20,19 @@ interface FaceLandmarks {
   foreheadTop: Point;
 }
 
+const FALLBACK_LANDMARKS: FaceLandmarks = {
+  foreheadTop: { x: 50, y: 17 },
+  browCenter: { x: 50, y: 36 },
+  leftEye: { x: 40, y: 42 },
+  rightEye: { x: 60, y: 42 },
+  cheekLeft: { x: 32, y: 49 },
+  cheekRight: { x: 68, y: 49 },
+  noseTip: { x: 50, y: 56 },
+  jawLeft: { x: 35, y: 69 },
+  jawRight: { x: 65, y: 69 },
+  chin: { x: 50, y: 83 },
+};
+
 let cachedLandmarker: any = null;
 
 async function detectFaceLandmarks(imageUrl: string): Promise<FaceLandmarks | null> {
@@ -35,7 +48,6 @@ async function detectFaceLandmarks(imageUrl: string): Promise<FaceLandmarks | nu
         baseOptions: {
           modelAssetPath:
             "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-          delegate: "GPU",
         },
         outputFaceBlendshapes: false,
         runningMode: "IMAGE",
@@ -52,16 +64,15 @@ async function detectFaceLandmarks(imageUrl: string): Promise<FaceLandmarks | nu
     });
 
     const result = cachedLandmarker.detect(img);
-    if (!result.faceLandmarks || result.faceLandmarks.length === 0) return null;
+    if (!result?.faceLandmarks || result.faceLandmarks.length === 0) return null;
 
     const pts = result.faceLandmarks[0];
     const targetAspect = 4 / 3;
     const imgAspect = img.naturalWidth / img.naturalHeight;
 
-    const toPct = (idx: number): Point => {
-      let x = pts[idx].x;
-      let y = pts[idx].y;
-
+    const mapRaw = (rawX: number, rawY: number): Point => {
+      let x = rawX;
+      let y = rawY;
       if (imgAspect > targetAspect) {
         const scale = imgAspect / targetAspect;
         x = (x - 0.5) * scale + 0.5;
@@ -69,16 +80,19 @@ async function detectFaceLandmarks(imageUrl: string): Promise<FaceLandmarks | nu
         const scale = targetAspect / imgAspect;
         y = (y - 0.5) * scale + 0.5;
       }
-
       return {
-        x: Number((x * 100).toFixed(2)),
-        y: Number((y * 100).toFixed(2)),
+        x: Math.max(5, Math.min(95, Number((x * 100).toFixed(2)))),
+        y: Math.max(5, Math.min(95, Number((y * 100).toFixed(2)))),
       };
     };
 
+    const toPct = (idx: number): Point => mapRaw(pts[idx].x, pts[idx].y);
+    const midPct = (a: number, b: number): Point =>
+      mapRaw((pts[a].x + pts[b].x) / 2, (pts[a].y + pts[b].y) / 2);
+
     return {
-      leftEye: toPct(468),
-      rightEye: toPct(473),
+      leftEye: midPct(33, 133),
+      rightEye: midPct(362, 263),
       browCenter: toPct(9),
       noseTip: toPct(1),
       chin: toPct(152),
@@ -88,8 +102,7 @@ async function detectFaceLandmarks(imageUrl: string): Promise<FaceLandmarks | nu
       cheekRight: toPct(454),
       foreheadTop: toPct(10),
     };
-  } catch (err) {
-    console.error("MediaPipe yüz tarama hatası:", err);
+  } catch {
     return null;
   }
 }
@@ -100,10 +113,11 @@ interface Props {
 }
 
 export default function FaceMeshOverlay({ imageSrc, showLines }: Props) {
-  const [landmarks, setLandmarks] = useState<FaceLandmarks | null>(null);
+  const [landmarks, setLandmarks] = useState<FaceLandmarks>(FALLBACK_LANDMARKS);
 
   useEffect(() => {
     let active = true;
+    setLandmarks(FALLBACK_LANDMARKS);
     detectFaceLandmarks(imageSrc).then((data) => {
       if (active && data) setLandmarks(data);
     });
@@ -112,7 +126,7 @@ export default function FaceMeshOverlay({ imageSrc, showLines }: Props) {
     };
   }, [imageSrc]);
 
-  if (!showLines || !landmarks) return null;
+  if (!showLines) return null;
 
   const {
     leftEye,
@@ -131,55 +145,63 @@ export default function FaceMeshOverlay({ imageSrc, showLines }: Props) {
     <svg
       viewBox="0 0 100 100"
       preserveAspectRatio="none"
-      className="pointer-events-none absolute inset-0 h-full w-full"
+      className="pointer-events-none absolute inset-0 z-10 h-full w-full"
     >
+      {/* Dikey simetri ekseni */}
       <line
         x1={foreheadTop.x}
         y1={foreheadTop.y}
         x2={chin.x}
         y2={chin.y}
-        stroke="rgba(56, 189, 248, 0.55)"
-        strokeWidth="0.35"
-        strokeDasharray="1.5 1.5"
+        stroke="rgba(56, 189, 248, 0.75)"
+        strokeWidth="0.55"
+        strokeDasharray="1.8 1.4"
       />
+      {/* Göz hizası yatay ekseni */}
       <line
         x1={cheekLeft.x}
         y1={leftEye.y}
         x2={cheekRight.x}
         y2={rightEye.y}
         stroke="#38BDF8"
-        strokeWidth="0.4"
+        strokeWidth="0.65"
       />
+      {/* Kaş ve burun üçlü oran çizgileri */}
       <line
         x1={cheekLeft.x}
         y1={browCenter.y}
         x2={cheekRight.x}
         y2={browCenter.y}
-        stroke="rgba(56, 189, 248, 0.45)"
-        strokeWidth="0.35"
+        stroke="rgba(56, 189, 248, 0.55)"
+        strokeWidth="0.5"
       />
       <line
         x1={cheekLeft.x}
         y1={noseTip.y}
         x2={cheekRight.x}
         y2={noseTip.y}
-        stroke="rgba(56, 189, 248, 0.45)"
-        strokeWidth="0.35"
+        stroke="rgba(56, 189, 248, 0.55)"
+        strokeWidth="0.5"
       />
+      {/* Elmacık - çene dış konturu */}
       <polyline
-        points={`${jawLeft.x},${jawLeft.y} ${chin.x},${chin.y} ${jawRight.x},${jawRight.y}`}
+        points={`${cheekLeft.x},${cheekLeft.y} ${jawLeft.x},${jawLeft.y} ${chin.x},${chin.y} ${jawRight.x},${jawRight.y} ${cheekRight.x},${cheekRight.y}`}
         fill="none"
         stroke="#FAFAFA"
-        strokeWidth="0.55"
-        strokeOpacity="0.85"
+        strokeWidth="0.8"
+        strokeOpacity="0.9"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      {[leftEye, rightEye, chin].map((pt, i) => (
-        <circle key={i} cx={pt.x} cy={pt.y} r="0.9" fill="#38BDF8" />
+      {/* Ölçüm düğüm noktaları */}
+      {[leftEye, rightEye, chin, noseTip, browCenter].map((pt, i) => (
+        <g key={`ice-${i}`}>
+          <circle cx={pt.x} cy={pt.y} r="1.8" fill="rgba(56, 189, 248, 0.28)" />
+          <circle cx={pt.x} cy={pt.y} r="0.95" fill="#38BDF8" />
+        </g>
       ))}
-      {[jawLeft, jawRight].map((pt, i) => (
-        <circle key={i} cx={pt.x} cy={pt.y} r="0.9" fill="#FAFAFA" />
+      {[jawLeft, jawRight, cheekLeft, cheekRight].map((pt, i) => (
+        <circle key={`jaw-${i}`} cx={pt.x} cy={pt.y} r="0.95" fill="#FAFAFA" />
       ))}
     </svg>
   );
