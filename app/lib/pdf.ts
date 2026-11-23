@@ -12,13 +12,13 @@ export type PdfAnalysis = {
   plan: CoachingPlan;
 };
 
-const W = 1240, H = 1754, M = 96, FOOTER = 90;
-const C = { bg: "#09090B", panel: "#121216", line: "rgba(255,255,255,.10)", text: "#FAFAFA", muted: "rgba(250,250,250,.68)", dim: "rgba(250,250,250,.42)", gold: "#D4B16A", ice: "#38BDF8" };
+const W = 1240, H = 1754, M = 96, FOOTER = 104;
+const C = { bg: "#09090B", panel: "#121216", line: "rgba(255,255,255,.10)", text: "#FAFAFA", muted: "rgba(250,250,250,.72)", dim: "rgba(250,250,250,.48)", gold: "#D4B16A", ice: "#38BDF8" };
 const SERIF = 'Georgia, "Times New Roman", serif';
 const SANS = '"Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif';
 
 type Ctx = CanvasRenderingContext2D & { letterSpacing?: string };
-type TextOpts = { size?: number; color?: string; family?: string; weight?: string; x?: number; width?: number; lh?: number; spacing?: string; align?: CanvasTextAlign };
+type TextOpts = { size?: number; color?: string; family?: string; weight?: string; x?: number; width?: number; lh?: number; spacing?: string; align?: CanvasTextAlign; noBreak?: boolean };
 
 class PdfDoc {
   pages: HTMLCanvasElement[] = [];
@@ -39,11 +39,11 @@ class PdfDoc {
     ctx.textBaseline = "top";
     this.pages.push(canvas); this.ctx = ctx; this.y = M;
     if (this.pages.length > 1) {
-      this.text("LUMEN", { size: 22, color: C.gold, spacing: "8px", weight: "600", family: SANS });
+      this.text("LUMEN", { size: 22, color: C.gold, spacing: "8px", weight: "600", family: SANS, noBreak: true });
       this.y = M;
-      this.text("Kişisel Dönüşüm Planı", { size: 20, color: C.dim, align: "right", x: W - M, family: SANS });
+      this.text("Kişisel Dönüşüm Planı", { size: 20, color: C.dim, align: "right", x: W - M, family: SANS, noBreak: true });
       this.line(M, M + 44, W - M);
-      this.y = M + 90;
+      this.y = M + 88;
     }
   }
 
@@ -79,7 +79,7 @@ class PdfDoc {
   text(value: string, opts: TextOpts = {}) {
     const size = opts.size ?? 26, lh = size * (opts.lh ?? 1.5);
     for (const line of this.lines(value, opts)) {
-      this.ensure(lh);
+      if (!opts.noBreak) this.ensure(lh);
       this.setFont(opts);
       this.ctx.fillStyle = opts.color ?? C.muted;
       this.ctx.textAlign = opts.align ?? "left";
@@ -104,11 +104,11 @@ class PdfDoc {
     if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke(); }
   }
 
-  section(index: string, title: string, keepWithNext = 140) {
+  section(index: string, title: string, keepWithNext = 160) {
     this.ensure(190 + keepWithNext);
-    this.y += 36;
-    this.text(`${index}`, { size: 22, color: C.gold, spacing: "6px", weight: "600", family: SANS });
-    this.text(title, { size: 46, color: C.text, family: SERIF, lh: 1.25 });
+    this.y += 32;
+    this.text(`${index}`, { size: 22, color: C.gold, spacing: "6px", weight: "600", family: SANS, noBreak: true });
+    this.text(title, { size: 46, color: C.text, family: SERIF, lh: 1.25, noBreak: true });
     this.line(M, this.y + 6, M + 90, C.gold, 3);
     this.y += 34;
   }
@@ -117,14 +117,14 @@ class PdfDoc {
     const size = 26, textX = M + 72, width = W - M - textX;
     items.forEach((item, i) => {
       const h = Math.max(54, this.heightOf(item, { size, width }));
-      this.ensure(h + 22);
+      this.ensure(h + 24);
       const ctx = this.ctx;
       ctx.strokeStyle = C.gold; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(M + 25, this.y + 22, 24, 0, Math.PI * 2); ctx.stroke();
       this.setFont({ size: 24, weight: "600" });
       ctx.fillStyle = C.gold; ctx.textAlign = "center"; ctx.fillText(String(i + 1), M + 25, this.y + 9); ctx.textAlign = "left";
       const startY = this.y;
-      this.text(item, { size, x: textX, width, color: C.muted });
+      this.text(item, { size, x: textX, width, color: C.muted, noBreak: true });
       this.y = startY + h + 22;
     });
   }
@@ -150,10 +150,10 @@ class PdfDoc {
       const ctx = canvas.getContext("2d") as Ctx;
       ctx.textBaseline = "top";
       ctx.strokeStyle = C.line; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(M, H - M - 36); ctx.lineTo(W - M, H - M - 36); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(M, H - M - 40); ctx.lineTo(W - M, H - M - 40); ctx.stroke();
       ctx.font = `400 19px ${SANS}`; ctx.fillStyle = C.dim;
-      ctx.textAlign = "left"; ctx.fillText("Lumen AI · Bu plan genel bilgilendirme amaçlıdır, tıbbi tavsiye değildir.", M, H - M - 14);
-      ctx.textAlign = "right"; ctx.fillText(`Sayfa ${i + 1} / ${total}`, W - M, H - M - 14);
+      ctx.textAlign = "left"; ctx.fillText("Lumen AI · Bu plan genel bilgilendirme amaçlıdır, tıbbi tavsiye değildir.", M, H - M - 16);
+      ctx.textAlign = "right"; ctx.fillText(`Sayfa ${i + 1} / ${total}`, W - M, H - M - 16);
     });
     return this.pages;
   }
@@ -177,13 +177,13 @@ async function renderPages(analysis: PdfAnalysis, portrait?: string) {
   const { metrics, plan } = analysis;
 
   // --- Kapak ---
-  doc.text("LUMEN", { size: 30, color: C.gold, spacing: "12px", weight: "600" });
+  doc.text("LUMEN", { size: 30, color: C.gold, spacing: "12px", weight: "600", noBreak: true });
   doc.y = M;
-  doc.text(new Date().toLocaleDateString("tr-TR", { day: "numeric", month: "long", year: "numeric" }), { size: 22, color: C.dim, align: "right", x: W - M });
+  doc.text(new Date().toLocaleDateString("tr-TR", { day: "numeric", month: "long", year: "numeric" }), { size: 22, color: C.dim, align: "right", x: W - M, noBreak: true });
   doc.y = M + 150;
-  doc.text("LUMEN AI  ·  KİŞİSEL KOÇLUK PLANI", { size: 22, color: C.ice, spacing: "7px", weight: "600" });
+  doc.text("LUMEN AI  ·  KİŞİSEL KOÇLUK PLANI", { size: 22, color: C.ice, spacing: "7px", weight: "600", noBreak: true });
   doc.y += 14;
-  doc.text("Dönüşüm\nPlanın", { size: 96, color: C.text, family: SERIF, lh: 1.08, width: 700 });
+  doc.text("Dönüşüm\nPlanın", { size: 96, color: C.text, family: SERIF, lh: 1.08, width: 700, noBreak: true });
   doc.line(M, doc.y + 20, M + 120, C.gold, 3);
   if (portrait) {
     try {
@@ -201,11 +201,11 @@ async function renderPages(analysis: PdfAnalysis, portrait?: string) {
   doc.ring(W * 0.7, doc.y + 150, 110, metrics.potential, C.gold, "POTANSİYEL");
   doc.y += 150 + 110 + 110;
 
-  doc.text(`Güçlü yanın: ${analysis.strongestFeature}`, { size: 28, color: C.text, family: SERIF });
+  doc.text(`Güçlü yanın: ${analysis.strongestFeature}`, { size: 28, color: C.text, family: SERIF, noBreak: true });
   doc.y += 6;
-  doc.text(`Odak alanın: ${analysis.improvementArea}`, { size: 28, color: C.text, family: SERIF });
+  doc.text(`Odak alanın: ${analysis.improvementArea}`, { size: 28, color: C.text, family: SERIF, noBreak: true });
   doc.y += 14;
-  doc.text(analysis.summary, { size: 23, color: C.dim });
+  doc.text(analysis.summary, { size: 23, color: C.dim, noBreak: true });
 
   // --- 01 Metrikler ve gözlemler ---
   doc.addPage();
@@ -213,8 +213,9 @@ async function renderPages(analysis: PdfAnalysis, portrait?: string) {
   for (const [key, label] of metricRows) {
     const value = metrics[key];
     const note = analysis.metricObservations[key] || "";
-    doc.ensure(60 + doc.heightOf(note, { size: 23 }) + 40);
-    doc.text(label, { size: 28, color: C.text, weight: "600" });
+    const noteH = doc.heightOf(note, { size: 23 });
+    doc.ensure(60 + noteH + 40);
+    doc.text(label, { size: 28, color: C.text, weight: "600", noBreak: true });
     doc.ctx.textAlign = "right"; doc.setFont({ size: 28, family: SERIF }); doc.ctx.fillStyle = C.gold; doc.ctx.fillText(`${value} / 100`, W - M, doc.y - 42); doc.ctx.textAlign = "left";
     doc.y += 4;
     doc.roundRect(M, doc.y, W - 2 * M, 14, 7, "rgba(255,255,255,.09)");
@@ -222,7 +223,7 @@ async function renderPages(analysis: PdfAnalysis, portrait?: string) {
     doc.roundRect(M, doc.y, Math.max(14, ((W - 2 * M) * value) / 100), 14, 7, undefined);
     doc.ctx.fillStyle = gradient; doc.ctx.fill();
     doc.y += 34;
-    doc.text(note, { size: 23, color: C.muted });
+    doc.text(note, { size: 23, color: C.muted, noBreak: true });
     doc.y += 26;
   }
 
@@ -239,39 +240,46 @@ async function renderPages(analysis: PdfAnalysis, portrait?: string) {
   // --- 05 Kişisel öneriler ---
   doc.section("05", "Kişisel Öneriler", 220);
   for (const item of analysis.recommendations) {
-    const h = 44 + doc.heightOf(item.recommendation, { size: 24, width: W - 2 * M - 64 }) + 48;
+    const bodyH = doc.heightOf(item.recommendation, { size: 24, width: W - 2 * M - 64 });
+    const h = 24 + 34 + bodyH + 28;
     doc.ensure(h + 20);
-    doc.roundRect(M, doc.y, W - 2 * M, h, 22, C.panel, C.line);
     const top = doc.y;
+    doc.roundRect(M, top, W - 2 * M, h, 22, C.panel, C.line);
     doc.y = top + 24;
-    doc.text(item.category.toUpperCase(), { size: 20, color: C.gold, spacing: "4px", weight: "600", x: M + 32 });
+    doc.text(item.category.toUpperCase(), { size: 20, color: C.gold, spacing: "4px", weight: "600", x: M + 32, noBreak: true });
     doc.y += 4;
-    doc.text(item.recommendation, { size: 24, color: C.muted, x: M + 32, width: W - 2 * M - 64 });
+    doc.text(item.recommendation, { size: 24, color: C.muted, x: M + 32, width: W - 2 * M - 64, noBreak: true });
     doc.y = top + h + 20;
   }
 
   // --- 06 30 günlük hedefler ---
-  doc.section("06", "30 Günlük Gelişim Hedefleri", 300);
+  doc.section("06", "30 Günlük Gelişim Hedefleri", 320);
   for (const week of plan.thirtyDayGoals) {
     const goalW = W - 2 * M - 64 - 56;
-    const goalsH = week.goals.reduce((sum, goal) => sum + doc.heightOf(goal, { size: 24, width: goalW }) + 14, 0);
-    const h = 40 + 58 + goalsH + 26;
-    doc.ensure(h + 20);
-    doc.roundRect(M, doc.y, W - 2 * M, h, 22, C.panel, C.line);
+    const goalHeights = week.goals.map((goal) => Math.max(36, doc.heightOf(goal, { size: 24, width: goalW })));
+    const goalsTotalH = goalHeights.reduce((sum, gh) => sum + gh + 16, 0);
+    const h = 30 + 44 + 14 + goalsTotalH + 24;
+    doc.ensure(h + 22);
     const top = doc.y;
+    doc.roundRect(M, top, W - 2 * M, h, 22, C.panel, C.line);
     doc.y = top + 30;
-    doc.text(`${week.week.toUpperCase()}  ·  ${week.title}`, { size: 28, color: C.text, family: SERIF, x: M + 32 });
+    doc.text(`${week.week.toUpperCase()}  ·  ${week.title}`, { size: 28, color: C.text, family: SERIF, x: M + 32, noBreak: true });
     doc.y += 14;
-    for (const goal of week.goals) {
-      doc.ctx.strokeStyle = C.gold; doc.ctx.lineWidth = 2.5; doc.ctx.strokeRect(M + 34, doc.y + 4, 26, 26);
-      doc.text(goal, { size: 24, color: C.muted, x: M + 32 + 56, width: goalW });
-      doc.y += 14;
-    }
-    doc.y = top + h + 20;
+    week.goals.forEach((goal, idx) => {
+      const gh = goalHeights[idx];
+      const rowTop = doc.y;
+      doc.ctx.strokeStyle = C.gold; doc.ctx.lineWidth = 2.5; doc.ctx.strokeRect(M + 34, rowTop + 4, 26, 26);
+      doc.text(goal, { size: 24, color: C.muted, x: M + 32 + 56, width: goalW, noBreak: true });
+      doc.y = rowTop + gh + 16;
+    });
+    doc.y = top + h + 22;
   }
 
+  const closingNote = "Planı 30 gün sonunda aynı ışık ve açıyla çekeceğin yeni bir fotoğrafla ve Lumen AI'da yeniden analizle değerlendir. Cilt veya sağlık sorunların varsa uygulamadan önce bir dermatolog / hekimle görüş.";
+  const closingH = doc.heightOf(closingNote, { size: 21 });
+  doc.ensure(closingH + 28);
   doc.y += 10;
-  doc.text("Planı 30 gün sonunda aynı ışık ve açıyla çekeceğin yeni bir fotoğrafla ve Lumen AI'da yeniden analizle değerlendir. Cilt veya sağlık sorunların varsa uygulamadan önce bir dermatolog / hekimle görüş.", { size: 21, color: C.dim });
+  doc.text(closingNote, { size: 21, color: C.dim, noBreak: true });
 
   return doc.finalize();
 }
