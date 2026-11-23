@@ -99,7 +99,7 @@ export function AuraChat({ analysis }: { analysis: AnalysisResult }) {
               Lumen AI <span className="text-white/35">—</span>{" "}
               <span className="text-white/70">Kişisel Koçun</span>
             </p>
-            <p className="truncate text-[11px] text-white/38">
+            <p className="truncate text-[11px] text-white/55">
               Skorlarına ve ilk adım planına özel yanıtlar
             </p>
           </div>
@@ -117,7 +117,7 @@ export function AuraChat({ analysis }: { analysis: AnalysisResult }) {
               type="button"
               disabled={loading}
               onClick={() => void send(question)}
-              className="shrink-0 rounded-full border border-white/[.12] bg-white/[.03] px-3.5 py-2 text-[11px] text-white/70 transition hover:border-ice/40 hover:text-ice disabled:opacity-40"
+              className="shrink-0 rounded-full border border-white/[.12] bg-white/[.03] px-3.5 py-2 text-[11px] text-white/75 transition hover:border-ice/40 hover:text-ice disabled:opacity-40"
             >
               {question}
             </button>
@@ -183,7 +183,7 @@ export function AuraChat({ analysis }: { analysis: AnalysisResult }) {
             maxLength={500}
             enterKeyHint="send"
             placeholder="Lumen AI'a bir soru sor..."
-            className="h-11 min-w-0 flex-1 rounded-xl border border-white/[.1] bg-white/[.03] px-3.5 text-[16px] sm:text-[13px] text-white outline-none placeholder:text-white/30 focus:border-ice/50"
+            className="h-11 min-w-0 flex-1 rounded-xl border border-white/[.1] bg-white/[.03] px-3.5 text-[16px] sm:text-[13px] text-white outline-none placeholder:text-white/40 focus:border-ice/50"
           />
           <button
             type="submit"
@@ -207,7 +207,7 @@ export function AuraChat({ analysis }: { analysis: AnalysisResult }) {
           </button>
         </form>
       </div>
-      <p className="mt-3 text-center text-[10px] leading-4 text-white/30">
+      <p className="mt-3 px-2 text-center text-[11px] leading-4 text-white/65">
         Lumen AI genel bilgi verir; tıbbi tavsiye değildir. Sağlık veya cilt
         sorunları için bir uzmana danış.
       </p>
