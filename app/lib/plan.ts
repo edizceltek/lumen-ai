@@ -94,7 +94,7 @@ export function buildPlan(analysis: { metrics: PlanMetrics }): CoachingPlan {
     ] },
     { week: "Hafta 4", title: "Ölçüm ve Ayar", goals: [
       "Hafta 1'deki ile aynı ışık ve açıda yeni fotoğraf çek; yan yana karşılaştır.",
-      "Aura'da yeniden analiz yap; değişimi puanlardan çok görünüme ve alışkanlıklarına bakarak değerlendir.",
+      "Lumen'de yeniden analiz yap; değişimi puanlardan çok görünüme ve alışkanlıklarına bakarak değerlendir.",
       `Bir sonraki 30 gün için odak alanını belirle (şu anki öncelik: ${focus.label.toLowerCase()}).`,
     ] },
   ];
